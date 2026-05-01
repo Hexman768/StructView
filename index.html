@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>StructView</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <header class="app-header">
+      <h1>StructView</h1>
+      <p>Paste JSON or YAML and explore it as a collapsible structure.</p>
+    </header>
+
+    <main class="layout">
+      <section class="panel editor-panel">
+        <div class="panel-title-row">
+          <h2>Input</h2>
+          <button id="render-btn" type="button">Generate Structure</button>
+        </div>
+
+        <div class="editor-wrap" id="editor-wrap">
+          <pre id="highlight-layer" class="highlight-layer" aria-hidden="true"></pre>
+          <textarea
+            id="input-box"
+            class="input-box"
+            spellcheck="false"
+            autocomplete="off"
+            autocorrect="off"
+            autocapitalize="off"
+            placeholder="Paste JSON or YAML here..."
+          ></textarea>
+        </div>
+
+        <p id="status" class="status">Waiting for input...</p>
+      </section>
+
+      <section class="panel viewer-panel">
+        <div class="panel-title-row">
+          <h2>Structure</h2>
+          <div class="legend">
+            <span class="badge object">Object</span>
+            <span class="badge array">Array</span>
+            <span class="badge value">Value</span>
+          </div>
+        </div>
+
+        <div id="tree-root" class="tree-root"></div>
+      </section>
+    </main>
+
+    <script src="renderer.js"></script>
+  </body>
+</html>
