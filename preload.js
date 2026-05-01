@@ -1,5 +1,26 @@
 const { contextBridge } = require('electron');
+const fs = require('fs');
+const path = require('path');
 const YAML = require('yaml');
+const settingsPath = path.join(__dirname, 'settings.json');
+
+function getSettings() {
+  const defaults = {
+    startWithEmptyInput: true,
+    defaultInput: ''
+  };
+
+  try {
+    const raw = fs.readFileSync(settingsPath, 'utf8');
+    const parsed = JSON.parse(raw);
+    return {
+      ...defaults,
+      ...parsed
+    };
+  } catch (error) {
+    return defaults;
+  }
+}
 
 function parseInput(text) {
   const source = (text || '').trim();
@@ -35,5 +56,6 @@ function parseInput(text) {
 }
 
 contextBridge.exposeInMainWorld('structViewApi', {
-  parseInput
+  parseInput,
+  getSettings
 });
