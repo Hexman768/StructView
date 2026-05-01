@@ -1,5 +1,6 @@
-const { app, BrowserWindow } = require('electron');
+const { app, BrowserWindow, nativeImage } = require('electron');
 const path = require('path');
+const iconPath = path.join(__dirname, 'assets', 'structview-logo.png');
 
 function createWindow() {
   const window = new BrowserWindow({
@@ -9,6 +10,7 @@ function createWindow() {
     minHeight: 700,
     title: 'StructView',
     backgroundColor: '#0b1020',
+    icon: iconPath,
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
@@ -20,6 +22,13 @@ function createWindow() {
 }
 
 app.whenReady().then(() => {
+  if (process.platform === 'darwin' && app.dock) {
+    const icon = nativeImage.createFromPath(iconPath);
+    if (!icon.isEmpty()) {
+      app.dock.setIcon(icon);
+    }
+  }
+
   createWindow();
 
   app.on('activate', () => {
