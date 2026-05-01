@@ -1,0 +1,263 @@
+:root {
+  color-scheme: dark;
+  --bg: #071019;
+  --bg-soft: #0f1b2c;
+  --panel: #111f31;
+  --panel-border: #1d3551;
+  --text: #e8f4ff;
+  --muted: #9fb8cf;
+  --accent: #50c4ff;
+  --accent-soft: #214f72;
+  --success: #4bd5a6;
+  --warning: #ffc857;
+  --danger: #ff7f7f;
+  --shadow: rgba(2, 7, 16, 0.6);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  font-family: "JetBrains Mono", "Fira Code", "SFMono-Regular", Menlo, Consolas, monospace;
+  background: radial-gradient(circle at 20% 10%, #123050 0%, var(--bg) 50%, #050a12 100%);
+  color: var(--text);
+}
+
+.app-header {
+  padding: 1.25rem 1.5rem 0.5rem;
+}
+
+.app-header h1 {
+  margin: 0;
+  letter-spacing: 0.06em;
+  font-size: 1.8rem;
+}
+
+.app-header p {
+  margin: 0.4rem 0 0;
+  color: var(--muted);
+}
+
+.layout {
+  display: grid;
+  grid-template-columns: minmax(340px, 45%) 1fr;
+  gap: 1rem;
+  padding: 0.75rem 1.5rem 1.5rem;
+  height: calc(100vh - 100px);
+}
+
+.panel {
+  background: linear-gradient(180deg, rgba(17, 31, 49, 0.96), rgba(9, 20, 34, 0.96));
+  border: 1px solid var(--panel-border);
+  border-radius: 16px;
+  box-shadow: 0 15px 30px -20px var(--shadow);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.panel-title-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0.9rem 1rem;
+  border-bottom: 1px solid var(--panel-border);
+}
+
+.panel-title-row h2 {
+  margin: 0;
+  font-size: 1rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+#render-btn {
+  border: 1px solid #3798d1;
+  background: linear-gradient(180deg, #42b6f7, #1984be);
+  color: #051019;
+  font-weight: 700;
+  border-radius: 10px;
+  padding: 0.55rem 0.85rem;
+  cursor: pointer;
+}
+
+#render-btn:hover {
+  filter: brightness(1.06);
+}
+
+.editor-wrap {
+  position: relative;
+  margin: 0.9rem;
+  border-radius: 12px;
+  overflow: auto;
+  flex: 1;
+  border: 1px solid #274869;
+  background: #06101a;
+}
+
+.highlight-layer,
+.input-box {
+  margin: 0;
+  border: none;
+  width: 100%;
+  min-height: 100%;
+  padding: 0.9rem;
+  font: 500 13px/1.55 "JetBrains Mono", "Fira Code", "SFMono-Regular", Menlo, Consolas, monospace;
+  tab-size: 2;
+  white-space: pre;
+}
+
+.highlight-layer {
+  display: none;
+}
+
+.input-box {
+  resize: none;
+  background: #06101a;
+  color: #d7e8f9;
+  caret-color: #ffffff;
+  overflow: auto;
+}
+
+.status {
+  margin: 0 1rem 1rem;
+  color: var(--muted);
+}
+
+.status.error {
+  color: var(--danger);
+}
+
+.status.success {
+  color: var(--success);
+}
+
+.tree-root {
+  margin: 0.9rem;
+  border: 1px solid #274869;
+  border-radius: 12px;
+  background: rgba(4, 12, 20, 0.8);
+  padding: 0.75rem;
+  overflow: auto;
+  flex: 1;
+}
+
+.node {
+  margin-bottom: 0.4rem;
+}
+
+.node details {
+  border: 1px solid #2d4f70;
+  border-radius: 10px;
+  background: rgba(17, 36, 55, 0.65);
+  padding: 0.35rem 0.45rem;
+}
+
+.node details[open] {
+  background: rgba(20, 43, 64, 0.72);
+}
+
+.node summary {
+  cursor: pointer;
+  list-style: none;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.node summary::-webkit-details-marker {
+  display: none;
+}
+
+.node-key {
+  color: var(--accent);
+  font-weight: 700;
+}
+
+.node-type {
+  color: #d1e6f8;
+  background: #1f3e5a;
+  border: 1px solid #315a7b;
+  border-radius: 999px;
+  padding: 0.08rem 0.5rem;
+  font-size: 0.72rem;
+}
+
+.node-meta {
+  color: var(--muted);
+  font-size: 0.8rem;
+}
+
+.node-children {
+  margin-top: 0.5rem;
+  margin-left: 0.8rem;
+  border-left: 1px dashed #365b7b;
+  padding-left: 0.65rem;
+}
+
+.primitive {
+  border: 1px solid #365b7b;
+  background: rgba(14, 30, 47, 0.72);
+  border-radius: 10px;
+  padding: 0.45rem 0.6rem;
+  display: inline-flex;
+  gap: 0.45rem;
+  align-items: center;
+}
+
+.badge {
+  border-radius: 999px;
+  padding: 0.12rem 0.5rem;
+  font-size: 0.72rem;
+  font-weight: 700;
+}
+
+.badge.object {
+  background: #284d71;
+}
+
+.badge.array {
+  background: #5b4930;
+}
+
+.badge.value {
+  background: #2f5643;
+}
+
+.token-key {
+  color: #65b9ff;
+}
+
+.token-string {
+  color: #9ee493;
+}
+
+.token-number {
+  color: #ffd27f;
+}
+
+.token-bool {
+  color: #ffb6e6;
+}
+
+.token-null {
+  color: #c7adc7;
+}
+
+.token-comment {
+  color: #7695ad;
+}
+
+@media (max-width: 980px) {
+  .layout {
+    grid-template-columns: 1fr;
+    height: auto;
+  }
+
+  .panel {
+    min-height: 420px;
+  }
+}

@@ -1,0 +1,23 @@
+{
+  "name": "structview",
+  "version": "1.0.0",
+  "description": "Desktop JSON/YAML structure viewer with collapsible nodes",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron ."
+  },
+  "keywords": [
+    "electron",
+    "json",
+    "yaml",
+    "viewer"
+  ],
+  "author": "",
+  "license": "MIT",
+  "devDependencies": {
+    "electron": "^37.0.0"
+  },
+  "dependencies": {
+    "yaml": "^2.8.1"
+  }
+}
