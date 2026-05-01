@@ -146,7 +146,7 @@ body {
   position: relative;
   margin: 0.9rem;
   border-radius: 12px;
-  overflow: auto;
+  overflow: hidden;
   flex: 1;
   border: 1px solid #274869;
   background: #06101a;
@@ -165,13 +165,19 @@ body {
 }
 
 .highlight-layer {
-  display: none;
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  color: #d7e8f9;
+  overflow: auto;
 }
 
 .input-box {
+  position: absolute;
+  inset: 0;
   resize: none;
-  background: #06101a;
-  color: #d7e8f9;
+  background: transparent;
+  color: transparent;
   caret-color: #ffffff;
   overflow: auto;
 }

@@ -17,20 +17,23 @@ let nextTabId = 1;
 const tabs = [];
 let activeTabId = null;
 
-const sample = `project:
-  name: StructView
-  version: 1.0
-  tags:
-    - desktop
-    - parser
-    - viewer
-  features:
-    syntaxHighlighting: true
-    collapsibleNodes: true
-    supports:
-      - JSON
-      - YAML
-`;
+function loadAppSettings() {
+  const defaults = {
+    startWithEmptyInput: true,
+    defaultInput: ''
+  };
+
+  const api = window.structViewApi;
+  if (!api || typeof api.getSettings !== 'function') {
+    return defaults;
+  }
+
+  const settings = api.getSettings();
+  return {
+    ...defaults,
+    ...settings
+  };
+}
 
 function currentTab() {
   return tabs.find((tab) => tab.id === activeTabId) || null;
@@ -102,6 +105,44 @@ function formatPrimitive(value) {
   }
 
   return String(value);
+}
+
+function escapeHtml(text) {
+  return String(text)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
+
+function highlightInput(text) {
+  const escaped = escapeHtml(text);
+  const tokenPattern =
+    /"(?:\\.|[^"\\])*"|\btrue\b|\bfalse\b|\bnull\b|-?\d+(?:\.\d+)?(?:[eE][+\-]?\d+)?|#[^\n]*/g;
+
+  return escaped.replace(tokenPattern, (match, offset, fullText) => {
+    if (match.startsWith('"')) {
+      let cursor = offset + match.length;
+      while (cursor < fullText.length && /\s/.test(fullText[cursor])) {
+        cursor += 1;
+      }
+      const className = fullText[cursor] === ':' ? 'token-key' : 'token-string';
+      return `<span class="${className}">${match}</span>`;
+    }
+
+    if (match === 'true' || match === 'false') {
+      return `<span class="token-bool">${match}</span>`;
+    }
+
+    if (match === 'null') {
+      return `<span class="token-null">${match}</span>`;
+    }
+
+    if (match.startsWith('#')) {
+      return `<span class="token-comment">${match}</span>`;
+    }
+
+    return `<span class="token-number">${match}</span>`;
+  });
 }
 
 function containsQuery(query, text) {
@@ -382,7 +423,7 @@ function parseAndRender(focusNextButton = false) {
 function syncHighlight() {
   const tab = currentTab();
   const text = tab ? tab.input : '';
-  highlightLayer.textContent = `${text}\n`;
+  highlightLayer.innerHTML = `${highlightInput(text)}\n`;
 }
 
 function renderTabBar() {
@@ -588,5 +629,9 @@ if (addTabButton) {
   });
 }
 
-addTab(sample);
-parseAndRender(false);
+const appSettings = loadAppSettings();
+const initialInput = appSettings.startWithEmptyInput ? '' : String(appSettings.defaultInput || '');
+addTab(initialInput);
+if (initialInput.trim()) {
+  parseAndRender(false);
+}
