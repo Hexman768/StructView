@@ -135,8 +135,61 @@ body {
   color: var(--success);
 }
 
+.search-row {
+  margin: 0.9rem 0.9rem 0.4rem;
+  display: flex;
+  gap: 0.55rem;
+}
+
+.tree-search {
+  flex: 1;
+  border: 1px solid #315a7b;
+  border-radius: 10px;
+  background: #081420;
+  color: #d7e8f9;
+  padding: 0.55rem 0.65rem;
+  font: 500 13px/1.3 "JetBrains Mono", "Fira Code", "SFMono-Regular", Menlo, Consolas, monospace;
+}
+
+.tree-search:focus {
+  outline: 2px solid #3798d1;
+  outline-offset: 1px;
+}
+
+.tree-search-clear {
+  border: 1px solid #315a7b;
+  background: #123050;
+  color: #d7e8f9;
+  border-radius: 10px;
+  padding: 0.5rem 0.75rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.tree-search-nav {
+  border: 1px solid #315a7b;
+  background: #0f253a;
+  color: #d7e8f9;
+  border-radius: 10px;
+  padding: 0.5rem 0.7rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.tree-search-nav:disabled,
+.tree-search-clear:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.search-status {
+  margin: 0 1rem 0.35rem;
+  color: var(--muted);
+  font-size: 0.84rem;
+}
+
 .tree-root {
-  margin: 0.9rem;
+  margin: 0.5rem 0.9rem 0.9rem;
   border: 1px solid #274869;
   border-radius: 12px;
   background: rgba(4, 12, 20, 0.8);
@@ -175,6 +228,16 @@ body {
 .node-key {
   color: var(--accent);
   font-weight: 700;
+}
+
+.match-hit {
+  color: #ffe28f;
+  text-shadow: 0 0 8px rgba(255, 226, 143, 0.3);
+}
+
+.active-match {
+  background: rgba(255, 226, 143, 0.22);
+  border-radius: 4px;
 }
 
 .node-type {
