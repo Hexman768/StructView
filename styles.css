@@ -182,6 +182,20 @@ body {
   overflow: auto;
 }
 
+.editor-wrap.plain-text-mode .highlight-layer {
+  display: none !important;
+}
+
+.editor-wrap.plain-text-mode .input-box {
+  position: relative;
+  inset: auto;
+  width: 100%;
+  min-height: 100%;
+  background: #06101a;
+  color: #d7e8f9;
+  overflow: auto;
+}
+
 .status {
   margin: 0 1rem 1rem;
   color: var(--muted);
@@ -431,6 +445,17 @@ body {
 
 .node-inline-cancel {
   background: #2b3340;
+}
+
+.lazy-load-more {
+  border: 1px solid #3c678a;
+  background: #11324b;
+  color: #e8f4ff;
+  border-radius: 8px;
+  padding: 0.3rem 0.55rem;
+  font-size: 0.75rem;
+  font-weight: 700;
+  cursor: pointer;
 }
 
 .badge {

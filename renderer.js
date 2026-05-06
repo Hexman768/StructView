@@ -10,6 +10,11 @@ const searchNextButton = document.getElementById('tree-search-next');
 const searchClearButton = document.getElementById('tree-search-clear');
 const searchStatus = document.getElementById('search-status');
 const renderBtn = document.getElementById('render-btn') || document.getElementById('generate-btn');
+const editorWrap = document.getElementById('editor-wrap');
+
+const LARGE_TEXT_PLAIN_MODE_THRESHOLD = 100000;
+const LARGE_TEXT_LINE_THRESHOLD = 8000;
+const LARGE_LAZY_CHUNK_SIZE = 200;
 
 let parseDebounce;
 let nextTabId = 1;
@@ -55,7 +60,8 @@ function makeTabState(initialInput = '') {
     statusType: 'neutral',
     parsedFormat: 'JSON',
     parseFallback: false,
-    expandedPaths: new Set()
+    expandedPaths: new Set(),
+    largePreviewMode: false
   };
 }
 
@@ -91,6 +97,38 @@ function refreshStatusFromTab() {
   }
   if (tab.statusType === 'success') {
     statusEl.classList.add('success');
+  }
+}
+
+function isLargeText(text) {
+  if (typeof text !== 'string') {
+    return false;
+  }
+
+  if (text.length > LARGE_TEXT_PLAIN_MODE_THRESHOLD) {
+    return true;
+  }
+
+  let lines = 1;
+  for (let i = 0; i < text.length; i += 1) {
+    if (text.charCodeAt(i) === 10) {
+      lines += 1;
+      if (lines > LARGE_TEXT_LINE_THRESHOLD) {
+        return true;
+      }
+    }
+  }
+
+  return false;
+}
+
+function syncEditorRenderMode(tab) {
+  const plainMode = Boolean(tab && isLargeText(tab.input));
+  if (editorWrap) {
+    editorWrap.classList.toggle('plain-text-mode', plainMode);
+  }
+  if (tab) {
+    tab.plainTextMode = plainMode;
   }
 }
 
@@ -680,6 +718,141 @@ function createTreeNode(label, value, depth = 0, query = '', matches = [], path 
   return createPrimitiveNode(label, value, query, matches, path, indexMeta);
 }
 
+function createLargeLazyNode(label, value, path = [], indexMeta = '') {
+  if (!isObject(value) && !Array.isArray(value)) {
+    return createPrimitiveNode(label, value, '', [], path, indexMeta);
+  }
+
+  const wrapper = document.createElement('div');
+  wrapper.className = 'node';
+
+  const details = document.createElement('details');
+  const pathToken = encodePath(path);
+  details.dataset.nodePath = pathToken;
+  details.dataset.lazyPath = pathToken;
+  details.dataset.lazyLoaded = 'false';
+  details.dataset.lazyOffset = '0';
+
+  const summary = document.createElement('summary');
+  summary.className = 'node-summary';
+
+  const key = document.createElement('span');
+  key.className = 'node-key';
+  key.textContent = label;
+
+  const type = document.createElement('span');
+  type.className = 'node-type';
+  type.textContent = Array.isArray(value) ? 'Array' : 'Object';
+
+  const meta = document.createElement('span');
+  meta.className = 'node-meta';
+  meta.textContent = Array.isArray(value)
+    ? `${indexMeta ? `${indexMeta} • ` : ''}${value.length} items`
+    : `${indexMeta ? `${indexMeta} • ` : ''}${Object.keys(value).length} fields`;
+
+  summary.append(key, type, meta);
+  details.appendChild(summary);
+
+  const children = document.createElement('div');
+  children.className = 'node-children';
+  children.dataset.lazyChildren = pathToken;
+
+  const hint = document.createElement('p');
+  hint.className = 'node-meta';
+  hint.textContent = 'Expand to load children';
+  children.appendChild(hint);
+
+  details.appendChild(children);
+  wrapper.appendChild(details);
+  return wrapper;
+}
+
+function buildLazyEntries(node, path) {
+  if (Array.isArray(node)) {
+    return node.map((item, index) => ({
+      label: getArrayItemLabel(item),
+      value: item,
+      path: [...path, index],
+      indexMeta: `index ${index}`
+    }));
+  }
+
+  return Object.entries(node).map(([key, value]) => ({
+    label: key,
+    value,
+    path: [...path, key],
+    indexMeta: ''
+  }));
+}
+
+function removeLazyLoadMore(children) {
+  const existing = children.querySelector('.lazy-load-more');
+  if (existing) {
+    existing.remove();
+  }
+}
+
+function populateLazyChildren(details, reset = false) {
+  const tab = currentTab();
+  if (!tab || !tab.largePreviewMode || tab.parsedData === null) {
+    return;
+  }
+
+  const path = decodePath(details.dataset.lazyPath || '');
+  if (!path) {
+    return;
+  }
+
+  const node = getNodeAtPath(tab.parsedData, path);
+  if (!isObject(node) && !Array.isArray(node)) {
+    return;
+  }
+
+  const children = details.querySelector('.node-children');
+  if (!children) {
+    return;
+  }
+
+  const entries = buildLazyEntries(node, path);
+  let offset = Number(details.dataset.lazyOffset || '0');
+
+  if (reset) {
+    children.innerHTML = '';
+    offset = 0;
+  } else {
+    removeLazyLoadMore(children);
+  }
+
+  const nextOffset = Math.min(offset + LARGE_LAZY_CHUNK_SIZE, entries.length);
+  for (let i = offset; i < nextOffset; i += 1) {
+    const entry = entries[i];
+    children.appendChild(createLargeLazyNode(entry.label, entry.value, entry.path, entry.indexMeta));
+  }
+
+  details.dataset.lazyOffset = String(nextOffset);
+  details.dataset.lazyLoaded = nextOffset >= entries.length ? 'true' : 'partial';
+
+  if (nextOffset < entries.length) {
+    const moreButton = document.createElement('button');
+    moreButton.type = 'button';
+    moreButton.className = 'lazy-load-more';
+    moreButton.dataset.lazyTargetPath = details.dataset.lazyPath || '';
+    moreButton.textContent = `Load more (${entries.length - nextOffset} remaining)`;
+    children.appendChild(moreButton);
+  }
+}
+
+function renderLargeStructurePreview(data) {
+  treeRoot.innerHTML = '';
+  const rootNode = createLargeLazyNode('root', data, []);
+  const rootDetails = rootNode.querySelector('details');
+  if (rootDetails) {
+    rootDetails.open = true;
+    populateLazyChildren(rootDetails, true);
+  }
+  treeRoot.appendChild(rootNode);
+}
+
 function clearActiveMatch() {
   treeRoot.querySelectorAll('.active-match').forEach((el) => {
     el.classList.remove('active-match');
@@ -748,6 +921,17 @@ function renderStructure(data, query = '', jumpToMatch = false, focusNextButton 
   captureExpandedPaths();
   treeRoot.innerHTML = '';
 
+  if (tab.largePreviewMode) {
+    renderLargeStructurePreview(data);
+    tab.matches = [];
+    tab.activeMatchIndex = -1;
+    if (searchStatus) {
+      searchStatus.textContent = 'Large file lazy mode: expand nodes to load full structure on demand.';
+    }
+    updateMatchButtons();
+    return;
+  }
+
   const normalizedQuery = query.trim().toLowerCase();
   const matches = [];
   const rootNode = createTreeNode('root', data, 0, normalizedQuery, matches, []);
@@ -806,6 +990,12 @@ function parseAndRender(focusNextButton = false) {
     return;
   }
 
+  // Guard against UI lockups when very large text is auto-parsed while typing/pasting.
+  if (!focusNextButton && isLargeText(tab.input)) {
+    setStatus('Large file detected. Click "Generate Structure" to parse manually.', 'neutral');
+    return;
+  }
+
   try {
     const source = tab.input;
     const parsed = parseSource(source);
@@ -823,6 +1013,15 @@ function parseAndRender(focusNextButton = false) {
       return;
     }
 
+    if (isLargeText(source)) {
+      tab.largePreviewMode = true;
+      tab.parsedData = parsed.data;
+      renderStructure(tab.parsedData, '', false, false);
+      setStatus(`Parsed as ${parsed.format}. Large lazy mode is active for performance.`, 'success');
+      return;
+    }
+
+    tab.largePreviewMode = false;
     tab.parsedData = parsed.data;
     tab.parsedFormat = parsed.format;
     tab.parseFallback = Boolean(parsed.fallback);
@@ -846,6 +1045,13 @@ function parseAndRender(focusNextButton = false) {
 function syncHighlight() {
   const tab = currentTab();
   const text = tab ? tab.input : '';
+  syncEditorRenderMode(tab);
+
+  if (tab && tab.plainTextMode) {
+    highlightLayer.textContent = '';
+    return;
+  }
+
   highlightLayer.innerHTML = `${highlightInput(text)}\n`;
 }
 
@@ -1105,7 +1311,23 @@ function handleDrop(event) {
   applyMove(dragState.sourcePath, targetPath);
 }
 
+function handleLazyLoadMore(event) {
+  const button = event.target.closest('.lazy-load-more');
+  if (!button) {
+    return;
+  }
+
+  const targetPath = button.dataset.lazyTargetPath || '';
+  const details = Array.from(treeRoot.querySelectorAll('details[data-lazy-path]')).find(
+    (node) => node.dataset.lazyPath === targetPath
+  );
+  if (details) {
+    populateLazyChildren(details, false);
+  }
+}
+
 treeRoot.addEventListener('click', handleEditClick);
+treeRoot.addEventListener('click', handleLazyLoadMore);
 treeRoot.addEventListener('dragstart', handleDragStart);
 treeRoot.addEventListener('dragend', handleDragEnd);
 treeRoot.addEventListener('dragover', handleDragOver);
@@ -1124,6 +1346,9 @@ treeRoot.addEventListener(
     }
     if (event.target.open) {
       tab.expandedPaths.add(pathToken);
+      if (tab.largePreviewMode && event.target.dataset.lazyLoaded === 'false') {
+        populateLazyChildren(event.target, true);
+      }
     } else {
       tab.expandedPaths.delete(pathToken);
     }
@@ -1140,11 +1365,25 @@ inputBox.addEventListener('input', () => {
   tab.input = inputBox.value;
   syncHighlight();
 
+  if (isLargeText(tab.input)) {
+    clearTimeout(parseDebounce);
+    tab.parsedData = null;
+    tab.largePreviewMode = false;
+    treeRoot.innerHTML =
+      '<p class="node-meta">Large file mode: structure parsing is paused. Click "Generate Structure" when ready.</p>';
+    setStatus('Large file detected. Click "Generate Structure" to parse manually.', 'neutral');
+    return;
+  }
+
   clearTimeout(parseDebounce);
   parseDebounce = setTimeout(() => parseAndRender(false), 250);
 });
 
 inputBox.addEventListener('scroll', () => {
+  const tab = currentTab();
+  if (tab && tab.plainTextMode) {
+    return;
+  }
   highlightLayer.scrollTop = inputBox.scrollTop;
   highlightLayer.scrollLeft = inputBox.scrollLeft;
 });
