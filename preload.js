@@ -55,7 +55,12 @@ function parseInput(text) {
   }
 }
 
+function stringifyYaml(value) {
+  return YAML.stringify(value);
+}
+
 contextBridge.exposeInMainWorld('structViewApi', {
   parseInput,
-  getSettings
+  getSettings,
+  stringifyYaml
 });

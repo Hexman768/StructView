@@ -10,12 +10,12 @@ const searchNextButton = document.getElementById('tree-search-next');
 const searchClearButton = document.getElementById('tree-search-clear');
 const searchStatus = document.getElementById('search-status');
 const renderBtn = document.getElementById('render-btn') || document.getElementById('generate-btn');
-const editorWrap = document.getElementById('editor-wrap');
 
 let parseDebounce;
 let nextTabId = 1;
 const tabs = [];
 let activeTabId = null;
+let dragState = null;
 
 function loadAppSettings() {
   const defaults = {
@@ -52,7 +52,10 @@ function makeTabState(initialInput = '') {
     matches: [],
     activeMatchIndex: -1,
     statusText: 'Waiting for input...',
-    statusType: 'neutral'
+    statusType: 'neutral',
+    parsedFormat: 'JSON',
+    parseFallback: false,
+    expandedPaths: new Set()
   };
 }
 
@@ -165,12 +168,250 @@ function nodeType(value) {
   return 'Value';
 }
 
-function createPrimitiveNode(label, value, query, matches) {
+function captureExpandedPaths() {
+  const tab = currentTab();
+  if (!tab) {
+    return;
+  }
+
+  const next = new Set();
+  treeRoot.querySelectorAll('details[data-node-path]').forEach((details) => {
+    if (details.open) {
+      next.add(details.dataset.nodePath);
+    }
+  });
+  tab.expandedPaths = next;
+}
+
+function encodePath(path) {
+  return JSON.stringify(path);
+}
+
+function decodePath(raw) {
+  try {
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : null;
+  } catch (error) {
+    return null;
+  }
+}
+
+function getNodeAtPath(root, path) {
+  let node = root;
+  for (const segment of path) {
+    if (node === undefined || node === null) {
+      return undefined;
+    }
+    node = node[segment];
+  }
+  return node;
+}
+
+function setNodeAtPath(root, path, value) {
+  if (path.length === 0) {
+    return value;
+  }
+
+  const parentPath = path.slice(0, -1);
+  const parent = getNodeAtPath(root, parentPath);
+  const key = path[path.length - 1];
+
+  if (Array.isArray(parent)) {
+    parent[Number(key)] = value;
+  } else if (isObject(parent)) {
+    parent[key] = value;
+  }
+
+  return root;
+}
+
+function removeNodeAtPath(root, path) {
+  if (path.length === 0) {
+    return null;
+  }
+
+  const parentPath = path.slice(0, -1);
+  const parent = getNodeAtPath(root, parentPath);
+  const key = path[path.length - 1];
+
+  if (Array.isArray(parent)) {
+    const index = Number(key);
+    const [value] = parent.splice(index, 1);
+    return {
+      key: index,
+      value,
+      parentType: 'array'
+    };
+  }
+
+  if (isObject(parent)) {
+    const value = parent[key];
+    delete parent[key];
+    return {
+      key,
+      value,
+      parentType: 'object'
+    };
+  }
+
+  return null;
+}
+
+function isAncestorPath(ancestorPath, descendantPath) {
+  if (ancestorPath.length >= descendantPath.length) {
+    return false;
+  }
+
+  return ancestorPath.every((segment, index) => segment === descendantPath[index]);
+}
+
+function pathsEqual(left, right) {
+  if (!Array.isArray(left) || !Array.isArray(right) || left.length !== right.length) {
+    return false;
+  }
+  return left.every((segment, index) => segment === right[index]);
+}
+
+function makeUniqueKey(targetObject, baseKey) {
+  let candidate = baseKey && String(baseKey).trim() ? String(baseKey) : 'movedItem';
+  if (!(candidate in targetObject)) {
+    return candidate;
+  }
+
+  let suffix = 1;
+  while (`${candidate}_${suffix}` in targetObject) {
+    suffix += 1;
+  }
+  return `${candidate}_${suffix}`;
+}
+
+function canRenamePath(path) {
+  if (!path || path.length === 0) {
+    return false;
+  }
+  const tab = currentTab();
+  if (!tab || tab.parsedData === null) {
+    return false;
+  }
+  const parent = getNodeAtPath(tab.parsedData, path.slice(0, -1));
+  return isObject(parent);
+}
+
+function parseEditableValue(rawInput) {
+  const raw = rawInput.trim();
+
+  if (!raw) {
+    return '';
+  }
+
+  const looksLikeJsonLiteral =
+    raw === 'null' ||
+    raw === 'true' ||
+    raw === 'false' ||
+    /^-?\d+(?:\.\d+)?(?:[eE][+\-]?\d+)?$/.test(raw) ||
+    raw.startsWith('{') ||
+    raw.startsWith('[') ||
+    raw.startsWith('"');
+
+  if (looksLikeJsonLiteral) {
+    return JSON.parse(raw);
+  }
+
+  return rawInput;
+}
+
+function serializeParsedData(tab) {
+  const api = window.structViewApi;
+  if (tab.parsedFormat === 'YAML' && api && typeof api.stringifyYaml === 'function') {
+    return api.stringifyYaml(tab.parsedData);
+  }
+
+  return JSON.stringify(tab.parsedData, null, 2);
+}
+
+function refreshTextPaneFromTab(tab) {
+  tab.input = serializeParsedData(tab);
+  inputBox.value = tab.input;
+  syncHighlight();
+}
+
+function applyStructureChange(message) {
+  const tab = currentTab();
+  if (!tab || tab.parsedData === null) {
+    return;
+  }
+
+  refreshTextPaneFromTab(tab);
+  renderStructure(tab.parsedData, tab.search, false, false);
+  if (tab.search.trim() && tab.matches.length > 0) {
+    setActiveMatch(tab.activeMatchIndex >= 0 ? tab.activeMatchIndex : 0, tab.search.trim(), false);
+  }
+  setStatus(message, 'success');
+}
+
+function renamePathKeyIfNeeded(path, nextKeyRaw) {
+  const tab = currentTab();
+  if (!tab || tab.parsedData === null) {
+    return path;
+  }
+
+  if (!canRenamePath(path)) {
+    return path;
+  }
+
+  const trimmed = String(nextKeyRaw ?? '').trim();
+  const oldKey = path[path.length - 1];
+  const newKey = trimmed || String(oldKey);
+  if (String(oldKey) === newKey) {
+    return path;
+  }
+
+  const parentPath = path.slice(0, -1);
+  const parent = getNodeAtPath(tab.parsedData, parentPath);
+  if (!isObject(parent)) {
+    return path;
+  }
+
+  if (Object.prototype.hasOwnProperty.call(parent, newKey)) {
+    throw new Error(`Key "${newKey}" already exists in this object.`);
+  }
+  const entries = Object.entries(parent);
+  const index = entries.findIndex(([key]) => key === oldKey);
+  if (index < 0) {
+    return path;
+  }
+  const existingValue = entries[index][1];
+  entries[index] = [newKey, existingValue];
+
+  Object.keys(parent).forEach((key) => {
+    delete parent[key];
+  });
+  entries.forEach(([key, entryValue]) => {
+    parent[key] = entryValue;
+  });
+
+  const nextPath = [...path];
+  nextPath[nextPath.length - 1] = newKey;
+  return nextPath;
+}
+
+function createPrimitiveNode(label, value, query, matches, path) {
   const wrapper = document.createElement('div');
   wrapper.className = 'node primitive-row';
+  wrapper.dataset.nodePath = encodePath(path);
 
   const content = document.createElement('div');
   content.className = 'primitive';
+
+  if (path.length > 0) {
+    const dragHandle = document.createElement('span');
+    dragHandle.className = 'node-drag-handle';
+    dragHandle.textContent = '::';
+    dragHandle.draggable = true;
+    dragHandle.dataset.dragSourcePath = encodePath(path);
+    dragHandle.title = 'Drag to move this node';
+    content.appendChild(dragHandle);
+  }
 
   const key = document.createElement('span');
   key.className = 'node-key';
@@ -181,8 +422,74 @@ function createPrimitiveNode(label, value, query, matches) {
   type.textContent = nodeType(value);
 
   const primitiveValue = document.createElement('span');
+  primitiveValue.className = 'primitive-value';
   const primitiveText = formatPrimitive(value);
   primitiveValue.textContent = primitiveText;
+
+  const editButton = document.createElement('button');
+  editButton.type = 'button';
+  editButton.className = 'node-edit-btn';
+  editButton.textContent = 'Edit';
+  editButton.dataset.editPath = encodePath(path);
+  editButton.draggable = false;
+  editButton.addEventListener('mousedown', (event) => {
+    event.stopPropagation();
+  });
+  editButton.addEventListener('click', (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    editor.classList.toggle('visible');
+    if (editor.classList.contains('visible')) {
+      valueInput.focus();
+      valueInput.select();
+    }
+  });
+
+  const editor = document.createElement('div');
+  editor.className = 'node-inline-editor';
+
+  const keyInput = document.createElement('input');
+  keyInput.type = 'text';
+  keyInput.className = 'node-inline-input node-inline-key';
+  keyInput.value = label;
+  keyInput.disabled = !canRenamePath(path);
+
+  const valueInput = document.createElement('input');
+  valueInput.type = 'text';
+  valueInput.className = 'node-inline-input node-inline-value';
+  valueInput.value = typeof value === 'string' ? value : JSON.stringify(value);
+
+  const saveButton = document.createElement('button');
+  saveButton.type = 'button';
+  saveButton.className = 'node-inline-save';
+  saveButton.textContent = 'Save';
+
+  const cancelButton = document.createElement('button');
+  cancelButton.type = 'button';
+  cancelButton.className = 'node-inline-cancel';
+  cancelButton.textContent = 'Cancel';
+
+  saveButton.addEventListener('click', () => {
+    const tab = currentTab();
+    if (!tab || tab.parsedData === null) {
+      return;
+    }
+    try {
+      const nextPath = renamePathKeyIfNeeded(path, keyInput.value);
+      const parsedValue = parseEditableValue(valueInput.value);
+      tab.parsedData = setNodeAtPath(tab.parsedData, nextPath, parsedValue);
+      applyStructureChange('Updated element from Structure View.');
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setStatus(`Edit failed: ${message}`, 'error');
+    }
+  });
+
+  cancelButton.addEventListener('click', () => {
+    editor.classList.remove('visible');
+  });
+
+  editor.append(keyInput, valueInput, saveButton, cancelButton);
 
   if (query && containsQuery(query, label)) {
     key.classList.add('match-hit');
@@ -194,19 +501,36 @@ function createPrimitiveNode(label, value, query, matches) {
     matches.push(primitiveValue);
   }
 
-  content.append(key, type, primitiveValue);
+  content.append(key, type, primitiveValue, editButton);
   wrapper.appendChild(content);
+  wrapper.appendChild(editor);
   return wrapper;
 }
 
-function createBranchNode(label, value, depth, query, matches) {
+function createBranchNode(label, value, depth, query, matches, path) {
   const wrapper = document.createElement('div');
   wrapper.className = 'node';
+  wrapper.dataset.nodePath = encodePath(path);
 
   const details = document.createElement('details');
-  details.open = depth < 2;
+  const pathToken = encodePath(path);
+  details.dataset.nodePath = pathToken;
+  const tab = currentTab();
+  details.open = Boolean(tab && tab.expandedPaths && tab.expandedPaths.has(pathToken)) || depth < 2;
 
   const summary = document.createElement('summary');
+  summary.className = 'node-summary';
+  summary.dataset.dropTargetPath = pathToken;
+
+  if (path.length > 0) {
+    const dragHandle = document.createElement('span');
+    dragHandle.className = 'node-drag-handle';
+    dragHandle.textContent = '::';
+    dragHandle.draggable = true;
+    dragHandle.dataset.dragSourcePath = pathToken;
+    dragHandle.title = 'Drag to move this node';
+    summary.appendChild(dragHandle);
+  }
 
   const key = document.createElement('span');
   key.className = 'node-key';
@@ -230,19 +554,79 @@ function createBranchNode(label, value, depth, query, matches) {
     meta.textContent = `${size} field${size === 1 ? '' : 's'}`;
   }
 
-  summary.append(key, type, meta);
+  const branchEdit = document.createElement('button');
+  branchEdit.type = 'button';
+  branchEdit.className = 'node-edit-btn';
+  branchEdit.textContent = 'Edit';
+  branchEdit.draggable = false;
+
+  const branchEditor = document.createElement('div');
+  branchEditor.className = 'node-inline-editor';
+
+  const branchKeyInput = document.createElement('input');
+  branchKeyInput.type = 'text';
+  branchKeyInput.className = 'node-inline-input node-inline-key';
+  branchKeyInput.value = label;
+  branchKeyInput.disabled = !canRenamePath(path);
+
+  const branchSave = document.createElement('button');
+  branchSave.type = 'button';
+  branchSave.className = 'node-inline-save';
+  branchSave.textContent = 'Save';
+
+  const branchCancel = document.createElement('button');
+  branchCancel.type = 'button';
+  branchCancel.className = 'node-inline-cancel';
+  branchCancel.textContent = 'Cancel';
+
+  branchEdit.addEventListener('click', (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    details.open = true;
+    branchEditor.classList.add('visible');
+    branchKeyInput.focus();
+    branchKeyInput.select();
+  });
+
+  branchSave.addEventListener('click', (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    try {
+      const tab = currentTab();
+      if (!tab || tab.parsedData === null) {
+        return;
+      }
+      renamePathKeyIfNeeded(path, branchKeyInput.value);
+      applyStructureChange('Renamed element from Structure View.');
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setStatus(`Rename failed: ${message}`, 'error');
+    }
+  });
+
+  branchCancel.addEventListener('click', (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    branchEditor.classList.remove('visible');
+  });
+
+  branchEditor.append(branchKeyInput, branchSave, branchCancel);
+
+  summary.append(key, type, meta, branchEdit);
   details.appendChild(summary);
+  details.appendChild(branchEditor);
 
   const childrenWrap = document.createElement('div');
   childrenWrap.className = 'node-children';
+  childrenWrap.dataset.dropTargetPath = pathToken;
 
   if (Array.isArray(value)) {
     value.forEach((item, index) => {
-      childrenWrap.appendChild(createTreeNode(`[${index}]`, item, depth + 1, query, matches));
+      childrenWrap.appendChild(createTreeNode(`[${index}]`, item, depth + 1, query, matches, [...path, index]));
     });
   } else {
     Object.entries(value).forEach(([childKey, childValue]) => {
-      childrenWrap.appendChild(createTreeNode(childKey, childValue, depth + 1, query, matches));
+      childrenWrap.appendChild(createTreeNode(childKey, childValue, depth + 1, query, matches, [...path, childKey]));
     });
   }
 
@@ -251,12 +635,12 @@ function createBranchNode(label, value, depth, query, matches) {
   return wrapper;
 }
 
-function createTreeNode(label, value, depth = 0, query = '', matches = []) {
+function createTreeNode(label, value, depth = 0, query = '', matches = [], path = []) {
   if (isObject(value) || Array.isArray(value)) {
-    return createBranchNode(label, value, depth, query, matches);
+    return createBranchNode(label, value, depth, query, matches, path);
   }
 
-  return createPrimitiveNode(label, value, query, matches);
+  return createPrimitiveNode(label, value, query, matches, path);
 }
 
 function clearActiveMatch() {
@@ -324,11 +708,12 @@ function renderStructure(data, query = '', jumpToMatch = false, focusNextButton 
     return;
   }
 
+  captureExpandedPaths();
   treeRoot.innerHTML = '';
 
   const normalizedQuery = query.trim().toLowerCase();
   const matches = [];
-  const rootNode = createTreeNode('root', data, 0, normalizedQuery, matches);
+  const rootNode = createTreeNode('root', data, 0, normalizedQuery, matches, []);
   treeRoot.appendChild(rootNode);
 
   tab.matches = matches;
@@ -402,9 +787,10 @@ function parseAndRender(focusNextButton = false) {
     }
 
     tab.parsedData = parsed.data;
+    tab.parsedFormat = parsed.format;
+    tab.parseFallback = Boolean(parsed.fallback);
     renderStructure(parsed.data, tab.search, true, focusNextButton && Boolean(tab.search.trim()));
-    const modeNote = parsed.fallback ? ' (browser preview mode)' : '';
-    setStatus(`Parsed as ${parsed.format}${modeNote}. Expand any box to inspect nested values.`, 'success');
+    setStatus(`Parsed as ${parsed.format}. Expand any box to inspect nested values.`, 'success');
   } catch (error) {
     tab.parsedData = null;
     tab.matches = [];
@@ -514,7 +900,7 @@ function closeTab(id) {
   tabs.splice(index, 1);
 
   if (tabs.length === 0) {
-    addTab(sample);
+    addTab('');
     return;
   }
 
@@ -526,6 +912,164 @@ function closeTab(id) {
   renderTabBar();
   hydrateActiveTab();
 }
+
+function handleEditClick(event) {
+  const button = event.target.closest('.node-edit-btn');
+  if (!button) {
+    return;
+  }
+}
+
+function clearDropHighlights() {
+  treeRoot.querySelectorAll('.drop-target-active').forEach((el) => {
+    el.classList.remove('drop-target-active');
+  });
+}
+
+function applyMove(sourcePath, targetPath) {
+  const tab = currentTab();
+  if (!tab || tab.parsedData === null) {
+    return;
+  }
+
+  if (sourcePath.length === 0) {
+    setStatus('Root node cannot be moved.', 'error');
+    return;
+  }
+
+  const sourceParentPath = sourcePath.slice(0, -1);
+  if (pathsEqual(sourcePath, targetPath) || pathsEqual(sourceParentPath, targetPath)) {
+    return;
+  }
+
+  if (isAncestorPath(sourcePath, targetPath)) {
+    setStatus('Cannot move a node into its own descendant.', 'error');
+    return;
+  }
+
+  const targetNode = getNodeAtPath(tab.parsedData, targetPath);
+  if (!Array.isArray(targetNode) && !isObject(targetNode)) {
+    setStatus('Drop target must be an object or array.', 'error');
+    return;
+  }
+
+  const moved = removeNodeAtPath(tab.parsedData, sourcePath);
+  if (!moved) {
+    setStatus('Move failed: source path not found.', 'error');
+    return;
+  }
+
+  if (Array.isArray(targetNode)) {
+    targetNode.push(moved.value);
+  } else {
+    const sourceKey = moved.parentType === 'object' ? moved.key : 'movedItem';
+    const nextKey = makeUniqueKey(targetNode, sourceKey);
+    targetNode[nextKey] = moved.value;
+  }
+
+  applyStructureChange('Moved node in Structure View.');
+}
+
+function handleDragStart(event) {
+  if (event.target.closest('.node-edit-btn')) {
+    return;
+  }
+
+  const source = event.target.closest('[data-drag-source-path]');
+  if (!source) {
+    return;
+  }
+
+  const sourcePath = decodePath(source.dataset.dragSourcePath || '');
+  if (!sourcePath || sourcePath.length === 0) {
+    return;
+  }
+
+  dragState = {
+    sourcePath
+  };
+
+  source.classList.add('node-dragging');
+  if (event.dataTransfer) {
+    event.dataTransfer.effectAllowed = 'move';
+    event.dataTransfer.setData('text/plain', source.dataset.dragSourcePath);
+  }
+}
+
+function handleDragEnd() {
+  treeRoot.querySelectorAll('.node-dragging').forEach((el) => {
+    el.classList.remove('node-dragging');
+  });
+  clearDropHighlights();
+  dragState = null;
+}
+
+function handleDragOver(event) {
+  const target = event.target.closest('[data-drop-target-path]');
+  if (!target || !dragState) {
+    return;
+  }
+
+  event.preventDefault();
+  if (event.dataTransfer) {
+    event.dataTransfer.dropEffect = 'move';
+  }
+
+  clearDropHighlights();
+  target.classList.add('drop-target-active');
+}
+
+function handleDragLeave(event) {
+  const target = event.target.closest('[data-drop-target-path]');
+  if (!target) {
+    return;
+  }
+
+  target.classList.remove('drop-target-active');
+}
+
+function handleDrop(event) {
+  const target = event.target.closest('[data-drop-target-path]');
+  if (!target || !dragState) {
+    return;
+  }
+
+  event.preventDefault();
+  clearDropHighlights();
+
+  const targetPath = decodePath(target.dataset.dropTargetPath || '');
+  if (!targetPath) {
+    return;
+  }
+
+  applyMove(dragState.sourcePath, targetPath);
+}
+
+treeRoot.addEventListener('click', handleEditClick);
+treeRoot.addEventListener('dragstart', handleDragStart);
+treeRoot.addEventListener('dragend', handleDragEnd);
+treeRoot.addEventListener('dragover', handleDragOver);
+treeRoot.addEventListener('dragleave', handleDragLeave);
+treeRoot.addEventListener('drop', handleDrop);
+treeRoot.addEventListener(
+  'toggle',
+  (event) => {
+    if (!(event.target instanceof HTMLDetailsElement)) {
+      return;
+    }
+    const tab = currentTab();
+    const pathToken = event.target.dataset.nodePath;
+    if (!tab || !pathToken) {
+      return;
+    }
+    if (event.target.open) {
+      tab.expandedPaths.add(pathToken);
+    } else {
+      tab.expandedPaths.delete(pathToken);
+    }
+  },
+  true
+);
 
 inputBox.addEventListener('input', () => {
   const tab = currentTab();
@@ -543,13 +1087,6 @@ inputBox.addEventListener('input', () => {
 inputBox.addEventListener('scroll', () => {
   highlightLayer.scrollTop = inputBox.scrollTop;
   highlightLayer.scrollLeft = inputBox.scrollLeft;
-});
-
-editorWrap.addEventListener('scroll', () => {
-  inputBox.scrollTop = editorWrap.scrollTop;
-  inputBox.scrollLeft = editorWrap.scrollLeft;
-  highlightLayer.scrollTop = editorWrap.scrollTop;
-  highlightLayer.scrollLeft = editorWrap.scrollLeft;
 });
 
 if (renderBtn) {
