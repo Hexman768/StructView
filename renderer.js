@@ -168,6 +168,31 @@ function nodeType(value) {
   return 'Value';
 }
 
+function getArrayItemLabel(item) {
+  if (isObject(item)) {
+    const keys = Object.keys(item);
+    if (keys.length === 1) {
+      return keys[0];
+    }
+
+    const preferredKeys = ['name', 'id', 'title', 'label', 'key', 'dtaName'];
+    for (const preferredKey of preferredKeys) {
+      if (Object.prototype.hasOwnProperty.call(item, preferredKey)) {
+        const preferredValue = item[preferredKey];
+        if (preferredValue !== null && typeof preferredValue !== 'object') {
+          return `${preferredKey}: ${String(preferredValue)}`;
+        }
+      }
+    }
+  }
+
+  if (typeof item === 'string') {
+    return item.length > 26 ? `${item.slice(0, 26)}...` : item;
+  }
+
+  return 'item';
+}
+
 function captureExpandedPaths() {
   const tab = currentTab();
   if (!tab) {
@@ -395,7 +420,7 @@ function renamePathKeyIfNeeded(path, nextKeyRaw) {
   return nextPath;
 }
 
-function createPrimitiveNode(label, value, query, matches, path) {
+function createPrimitiveNode(label, value, query, matches, path, indexMeta = '') {
   const wrapper = document.createElement('div');
   wrapper.className = 'node primitive-row';
   wrapper.dataset.nodePath = encodePath(path);
@@ -416,6 +441,13 @@ function createPrimitiveNode(label, value, query, matches, path) {
   const key = document.createElement('span');
   key.className = 'node-key';
   key.textContent = label;
+
+  if (indexMeta) {
+    const indexBadge = document.createElement('span');
+    indexBadge.className = 'node-meta';
+    indexBadge.textContent = indexMeta;
+    content.appendChild(indexBadge);
+  }
 
   const type = document.createElement('span');
   type.className = 'node-type';
@@ -507,7 +539,7 @@ function createPrimitiveNode(label, value, query, matches, path) {
   return wrapper;
 }
 
-function createBranchNode(label, value, depth, query, matches, path) {
+function createBranchNode(label, value, depth, query, matches, path, indexMeta = '') {
   const wrapper = document.createElement('div');
   wrapper.className = 'node';
   wrapper.dataset.nodePath = encodePath(path);
@@ -548,10 +580,12 @@ function createBranchNode(label, value, depth, query, matches, path) {
   const meta = document.createElement('span');
   meta.className = 'node-meta';
   if (Array.isArray(value)) {
-    meta.textContent = `${value.length} item${value.length === 1 ? '' : 's'}`;
+    const countText = `${value.length} item${value.length === 1 ? '' : 's'}`;
+    meta.textContent = indexMeta ? `${indexMeta} • ${countText}` : countText;
   } else {
     const size = Object.keys(value).length;
-    meta.textContent = `${size} field${size === 1 ? '' : 's'}`;
+    const sizeText = `${size} field${size === 1 ? '' : 's'}`;
+    meta.textContent = indexMeta ? `${indexMeta} • ${sizeText}` : sizeText;
   }
 
   const branchEdit = document.createElement('button');
@@ -622,7 +656,10 @@ function createBranchNode(label, value, depth, query, matches, path) {
 
   if (Array.isArray(value)) {
     value.forEach((item, index) => {
-      childrenWrap.appendChild(createTreeNode(`[${index}]`, item, depth + 1, query, matches, [...path, index]));
+      const itemLabel = getArrayItemLabel(item);
+      childrenWrap.appendChild(
+        createTreeNode(itemLabel, item, depth + 1, query, matches, [...path, index], `index ${index}`)
+      );
     });
   } else {
     Object.entries(value).forEach(([childKey, childValue]) => {
@@ -635,12 +672,12 @@ function createBranchNode(label, value, depth, query, matches, path) {
   return wrapper;
 }
 
-function createTreeNode(label, value, depth = 0, query = '', matches = [], path = []) {
+function createTreeNode(label, value, depth = 0, query = '', matches = [], path = [], indexMeta = '') {
   if (isObject(value) || Array.isArray(value)) {
-    return createBranchNode(label, value, depth, query, matches, path);
+    return createBranchNode(label, value, depth, query, matches, path, indexMeta);
   }
 
-  return createPrimitiveNode(label, value, query, matches, path);
+  return createPrimitiveNode(label, value, query, matches, path, indexMeta);
 }
 
 function clearActiveMatch() {
@@ -953,6 +990,24 @@ function applyMove(sourcePath, targetPath) {
     return;
   }
 
+  const sourceParent = getNodeAtPath(tab.parsedData, sourceParentPath);
+  const sourceKey = sourcePath[sourcePath.length - 1];
+  const sourceParentType = Array.isArray(sourceParent) ? 'array' : isObject(sourceParent) ? 'object' : null;
+  const sourceValue = getNodeAtPath(tab.parsedData, sourcePath);
+
+  if (!sourceParentType) {
+    setStatus('Move failed: source parent is not a valid container.', 'error');
+    return;
+  }
+
+  if (isObject(targetNode) && sourceParentType === 'object') {
+    const sourceKeyText = String(sourceKey);
+    if (Object.prototype.hasOwnProperty.call(targetNode, sourceKeyText)) {
+      setStatus(`Move blocked: "${sourceKeyText}" already exists in the target object.`, 'error');
+      return;
+    }
+  }
+
   const moved = removeNodeAtPath(tab.parsedData, sourcePath);
   if (!moved) {
     setStatus('Move failed: source path not found.', 'error');
@@ -960,10 +1015,15 @@ function applyMove(sourcePath, targetPath) {
   }
 
   if (Array.isArray(targetNode)) {
-    targetNode.push(moved.value);
+    if (sourceParentType === 'object') {
+      targetNode.push({
+        [String(sourceKey)]: sourceValue
+      });
+    } else {
+      targetNode.push(moved.value);
+    }
   } else {
-    const sourceKey = moved.parentType === 'object' ? moved.key : 'movedItem';
-    const nextKey = makeUniqueKey(targetNode, sourceKey);
+    const nextKey = sourceParentType === 'object' ? String(sourceKey) : makeUniqueKey(targetNode, 'movedItem');
     targetNode[nextKey] = moved.value;
   }
 
