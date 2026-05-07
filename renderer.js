@@ -10,6 +10,10 @@ const searchNextButton = document.getElementById('tree-search-next');
 const searchClearButton = document.getElementById('tree-search-clear');
 const searchStatus = document.getElementById('search-status');
 const renderBtn = document.getElementById('render-btn') || document.getElementById('generate-btn');
+const clearTextButton = document.getElementById('clear-text-btn');
+const showTextPaneButton = document.getElementById('show-text-pane-btn');
+const bodyEl = document.body;
+const LARGE_FILE_HIDE_INPUT_LINE_THRESHOLD = 10000;
 
 let parseDebounce;
 let nextTabId = 1;
@@ -55,8 +59,36 @@ function makeTabState(initialInput = '') {
     statusType: 'neutral',
     parsedFormat: 'JSON',
     parseFallback: false,
-    expandedPaths: new Set()
+    expandedPaths: new Set(),
+    hideEditorForLargeFile: false,
+    showEditorOverride: false
   };
+}
+
+function countLines(text) {
+  if (typeof text !== 'string' || text.length === 0) {
+    return 0;
+  }
+
+  let lines = 1;
+  for (let i = 0; i < text.length; i += 1) {
+    if (text.charCodeAt(i) === 10) {
+      lines += 1;
+    }
+  }
+  return lines;
+}
+
+function shouldHideEditor(tab) {
+  return Boolean(tab && tab.hideEditorForLargeFile && !tab.showEditorOverride);
+}
+
+function applyPaneVisibility(tab = currentTab()) {
+  const hideEditor = shouldHideEditor(tab);
+  bodyEl.classList.toggle('structure-only-mode', hideEditor);
+  if (showTextPaneButton) {
+    showTextPaneButton.hidden = !hideEditor;
+  }
 }
 
 function setStatus(message, type = 'neutral') {
@@ -812,6 +844,8 @@ function parseAndRender(focusNextButton = false) {
 
     if (!parsed.ok) {
       tab.parsedData = null;
+      tab.hideEditorForLargeFile = false;
+      tab.showEditorOverride = false;
       tab.matches = [];
       tab.activeMatchIndex = -1;
       setStatus(parsed.error, 'error');
@@ -820,16 +854,22 @@ function parseAndRender(focusNextButton = false) {
         searchStatus.textContent = 'Showing full structure.';
       }
       updateMatchButtons();
+      applyPaneVisibility(tab);
       return;
     }
 
     tab.parsedData = parsed.data;
     tab.parsedFormat = parsed.format;
     tab.parseFallback = Boolean(parsed.fallback);
+    tab.hideEditorForLargeFile = countLines(source) >= LARGE_FILE_HIDE_INPUT_LINE_THRESHOLD;
+    tab.showEditorOverride = false;
     renderStructure(parsed.data, tab.search, true, focusNextButton && Boolean(tab.search.trim()));
     setStatus(`Parsed as ${parsed.format}. Expand any box to inspect nested values.`, 'success');
+    applyPaneVisibility(tab);
   } catch (error) {
     tab.parsedData = null;
+    tab.hideEditorForLargeFile = false;
+    tab.showEditorOverride = false;
     tab.matches = [];
     tab.activeMatchIndex = -1;
     const message = error instanceof Error ? error.message : String(error);
@@ -839,6 +879,7 @@ function parseAndRender(focusNextButton = false) {
       searchStatus.textContent = 'Showing full structure.';
     }
     updateMatchButtons();
+    applyPaneVisibility(tab);
     console.error('StructView render error:', error);
   }
 }
@@ -894,6 +935,7 @@ function hydrateActiveTab() {
     return;
   }
 
+  applyPaneVisibility(tab);
   inputBox.value = tab.input;
   if (searchInput) {
     searchInput.value = tab.search;
@@ -1138,6 +1180,9 @@ inputBox.addEventListener('input', () => {
   }
 
   tab.input = inputBox.value;
+  tab.hideEditorForLargeFile = false;
+  tab.showEditorOverride = false;
+  applyPaneVisibility(tab);
   syncHighlight();
 
   clearTimeout(parseDebounce);
@@ -1151,6 +1196,47 @@ inputBox.addEventListener('scroll', () => {
 
 if (renderBtn) {
   renderBtn.addEventListener('click', () => parseAndRender(true));
+}
+
+if (clearTextButton) {
+  clearTextButton.addEventListener('click', () => {
+    const tab = currentTab();
+    if (!tab) {
+      return;
+    }
+
+    clearTimeout(parseDebounce);
+    tab.input = '';
+    tab.parsedData = null;
+    tab.matches = [];
+    tab.activeMatchIndex = -1;
+    tab.expandedPaths = new Set();
+    tab.hideEditorForLargeFile = false;
+    tab.showEditorOverride = false;
+
+    inputBox.value = '';
+    syncHighlight();
+    applyPaneVisibility(tab);
+    treeRoot.innerHTML = '<p class="node-meta">Structure will appear here after successful parsing.</p>';
+    if (searchStatus) {
+      searchStatus.textContent = tab.search.trim() ? `No matches for "${tab.search.trim()}".` : 'Showing full structure.';
+    }
+    updateMatchButtons();
+    setStatus('Cleared all input text.', 'success');
+    inputBox.focus();
+  });
+}
+
+if (showTextPaneButton) {
+  showTextPaneButton.addEventListener('click', () => {
+    const tab = currentTab();
+    if (!tab) {
+      return;
+    }
+    tab.showEditorOverride = true;
+    applyPaneVisibility(tab);
+    inputBox.focus();
+  });
 }
 
 if (searchInput) {
@@ -1229,6 +1315,7 @@ if (addTabButton) {
 const appSettings = loadAppSettings();
 const initialInput = appSettings.startWithEmptyInput ? '' : String(appSettings.defaultInput || '');
 addTab(initialInput);
+applyPaneVisibility(currentTab());
 if (initialInput.trim()) {
   parseAndRender(false);
 }

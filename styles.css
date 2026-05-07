@@ -103,6 +103,14 @@ body {
   height: calc(100vh - 100px);
 }
 
+body.structure-only-mode .layout {
+  grid-template-columns: 1fr;
+}
+
+body.structure-only-mode .editor-panel {
+  display: none;
+}
+
 .panel {
   background: linear-gradient(180deg, rgba(17, 31, 49, 0.96), rgba(9, 20, 34, 0.96));
   border: 1px solid var(--panel-border);
@@ -128,6 +136,33 @@ body {
   text-transform: uppercase;
 }
 
+.panel-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.55rem;
+}
+
+.viewer-tools {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.6rem;
+}
+
+.show-text-pane-btn {
+  border: 1px solid #3c678a;
+  background: #13324a;
+  color: #e8f4ff;
+  border-radius: 10px;
+  padding: 0.45rem 0.7rem;
+  font-size: 0.76rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.show-text-pane-btn:hover {
+  filter: brightness(1.08);
+}
+
 #render-btn {
   border: 1px solid #3798d1;
   background: linear-gradient(180deg, #42b6f7, #1984be);
@@ -140,6 +175,20 @@ body {
 
 #render-btn:hover {
   filter: brightness(1.06);
+}
+
+.secondary-btn {
+  border: 1px solid #3c678a;
+  background: #123049;
+  color: #e8f4ff;
+  font-weight: 700;
+  border-radius: 10px;
+  padding: 0.5rem 0.75rem;
+  cursor: pointer;
+}
+
+.secondary-btn:hover {
+  filter: brightness(1.08);
 }
 
 .editor-wrap {
