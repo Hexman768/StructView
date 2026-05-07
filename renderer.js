@@ -14,7 +14,7 @@ const editorWrap = document.getElementById('editor-wrap');
 
 const LARGE_TEXT_PLAIN_MODE_THRESHOLD = 100000;
 const LARGE_TEXT_LINE_THRESHOLD = 8000;
-const LARGE_LAZY_CHUNK_SIZE = 200;
+const LARGE_LAZY_CHUNK_SIZE = 20;
 
 let parseDebounce;
 let nextTabId = 1;
@@ -61,7 +61,10 @@ function makeTabState(initialInput = '') {
     parsedFormat: 'JSON',
     parseFallback: false,
     expandedPaths: new Set(),
-    largePreviewMode: false
+    arrayItemPathLabels: new Map(),
+    largePreviewMode: false,
+    largeRootInfo: null,
+    largeStructureSuspended: false
   };
 }
 
@@ -348,15 +351,51 @@ function makeUniqueKey(targetObject, baseKey) {
   return `${candidate}_${suffix}`;
 }
 
+function deriveArrayItemKey(value, fallback = 'movedItem') {
+  if (isObject(value)) {
+    const keys = Object.keys(value);
+    if (keys.length === 1) {
+      return String(keys[0]);
+    }
+
+    const preferredKeys = ['name', 'id', 'title', 'label', 'key', 'dtaName'];
+    for (const preferred of preferredKeys) {
+      if (Object.prototype.hasOwnProperty.call(value, preferred)) {
+        const chosen = value[preferred];
+        if (chosen !== null && typeof chosen !== 'object') {
+          return String(chosen);
+        }
+      }
+    }
+  }
+
+  if (typeof value === 'string' && value.trim()) {
+    return value.trim().slice(0, 64);
+  }
+
+  return fallback;
+}
+
 function canRenamePath(path) {
   if (!path || path.length === 0) {
     return false;
   }
   const tab = currentTab();
-  if (!tab || tab.parsedData === null) {
+  if (!tab) {
     return false;
   }
-  const parent = getNodeAtPath(tab.parsedData, path.slice(0, -1));
+  let root = tab.parsedData;
+  if (tab.largePreviewMode) {
+    const parsed = parseSource(tab.input);
+    if (!parsed.ok) {
+      return false;
+    }
+    root = parsed.data;
+  }
+  if (root === null || root === undefined) {
+    return false;
+  }
+  const parent = getNodeAtPath(root, path.slice(0, -1));
   return isObject(parent);
 }
 
@@ -383,13 +422,46 @@ function parseEditableValue(rawInput) {
   return rawInput;
 }
 
-function serializeParsedData(tab) {
+function serializeDataForFormat(tab, data) {
   const api = window.structViewApi;
   if (tab.parsedFormat === 'YAML' && api && typeof api.stringifyYaml === 'function') {
-    return api.stringifyYaml(tab.parsedData);
+    return api.stringifyYaml(data);
   }
 
-  return JSON.stringify(tab.parsedData, null, 2);
+  return JSON.stringify(data, null, 2);
+}
+
+function summarizeNodeForLazy(node) {
+  if (Array.isArray(node)) {
+    return {
+      kind: 'array',
+      count: node.length
+    };
+  }
+
+  if (isObject(node)) {
+    return {
+      kind: 'object',
+      count: Object.keys(node).length
+    };
+  }
+
+  return {
+    kind: 'primitive',
+    value: formatPrimitive(node)
+  };
+}
+
+function getLargeModeNodeAtPath(tab, path) {
+  const parsed = parseSource(tab.input);
+  if (!parsed.ok) {
+    throw new Error(parsed.error);
+  }
+  return getNodeAtPath(parsed.data, path);
+}
+
+function serializeParsedData(tab) {
+  return serializeDataForFormat(tab, tab.parsedData);
 }
 
 function refreshTextPaneFromTab(tab) {
@@ -398,9 +470,40 @@ function refreshTextPaneFromTab(tab) {
   syncHighlight();
 }
 
+function commitLargeModeRoot(tab, root, message) {
+  tab.input = serializeDataForFormat(tab, root);
+  inputBox.value = tab.input;
+  syncHighlight();
+  tab.largeRootInfo = {
+    mode: 'large-lazy'
+  };
+  setStatus(message, 'success');
+  renderStructure(null, tab.search, false, false);
+}
+
+function runMutation(tab, mutator, successMessage) {
+  if (tab.largePreviewMode) {
+    const parsed = parseSource(tab.input);
+    if (!parsed.ok) {
+      throw new Error(parsed.error);
+    }
+    const root = parsed.data;
+    mutator(root);
+    commitLargeModeRoot(tab, root, successMessage);
+    return;
+  }
+
+  if (tab.parsedData === null) {
+    return;
+  }
+
+  mutator(tab.parsedData);
+  applyStructureChange(successMessage);
+}
+
 function applyStructureChange(message) {
   const tab = currentTab();
-  if (!tab || tab.parsedData === null) {
+  if (!tab || tab.parsedData === null || tab.largePreviewMode) {
     return;
   }
 
@@ -412,16 +515,7 @@ function applyStructureChange(message) {
   setStatus(message, 'success');
 }
 
-function renamePathKeyIfNeeded(path, nextKeyRaw) {
-  const tab = currentTab();
-  if (!tab || tab.parsedData === null) {
-    return path;
-  }
-
-  if (!canRenamePath(path)) {
-    return path;
-  }
-
+function renamePathKeyIfNeeded(path, nextKeyRaw, rootOverride = null) {
   const trimmed = String(nextKeyRaw ?? '').trim();
   const oldKey = path[path.length - 1];
   const newKey = trimmed || String(oldKey);
@@ -429,8 +523,28 @@ function renamePathKeyIfNeeded(path, nextKeyRaw) {
     return path;
   }
 
+  let root = rootOverride;
+  if (!root) {
+    const tab = currentTab();
+    if (!tab) {
+      return path;
+    }
+    if (tab.largePreviewMode) {
+      const parsed = parseSource(tab.input);
+      if (!parsed.ok) {
+        throw new Error(parsed.error);
+      }
+      root = parsed.data;
+    } else {
+      root = tab.parsedData;
+    }
+  }
+  if (!root) {
+    return path;
+  }
+
   const parentPath = path.slice(0, -1);
-  const parent = getNodeAtPath(tab.parsedData, parentPath);
+  const parent = getNodeAtPath(root, parentPath);
   if (!isObject(parent)) {
     return path;
   }
@@ -541,14 +655,19 @@ function createPrimitiveNode(label, value, query, matches, path, indexMeta = '')
 
   saveButton.addEventListener('click', () => {
     const tab = currentTab();
-    if (!tab || tab.parsedData === null) {
+    if (!tab) {
       return;
     }
     try {
-      const nextPath = renamePathKeyIfNeeded(path, keyInput.value);
-      const parsedValue = parseEditableValue(valueInput.value);
-      tab.parsedData = setNodeAtPath(tab.parsedData, nextPath, parsedValue);
-      applyStructureChange('Updated element from Structure View.');
+      runMutation(
+        tab,
+        (root) => {
+          const nextPath = renamePathKeyIfNeeded(path, keyInput.value, root);
+          const parsedValue = parseEditableValue(valueInput.value);
+          setNodeAtPath(root, nextPath, parsedValue);
+        },
+        'Updated element from Structure View.'
+      );
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       setStatus(`Edit failed: ${message}`, 'error');
@@ -665,11 +784,16 @@ function createBranchNode(label, value, depth, query, matches, path, indexMeta =
     event.stopPropagation();
     try {
       const tab = currentTab();
-      if (!tab || tab.parsedData === null) {
+      if (!tab) {
         return;
       }
-      renamePathKeyIfNeeded(path, branchKeyInput.value);
-      applyStructureChange('Renamed element from Structure View.');
+      runMutation(
+        tab,
+        (root) => {
+          renamePathKeyIfNeeded(path, branchKeyInput.value, root);
+        },
+        'Renamed element from Structure View.'
+      );
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       setStatus(`Rename failed: ${message}`, 'error');
@@ -694,9 +818,11 @@ function createBranchNode(label, value, depth, query, matches, path, indexMeta =
 
   if (Array.isArray(value)) {
     value.forEach((item, index) => {
-      const itemLabel = getArrayItemLabel(item);
+      const itemPath = [...path, index];
+      const itemLabel =
+        (tab && tab.arrayItemPathLabels && tab.arrayItemPathLabels.get(encodePath(itemPath))) || getArrayItemLabel(item);
       childrenWrap.appendChild(
-        createTreeNode(itemLabel, item, depth + 1, query, matches, [...path, index], `index ${index}`)
+        createTreeNode(itemLabel, item, depth + 1, query, matches, itemPath, `index ${index}`)
       );
     });
   } else {
@@ -718,13 +844,120 @@ function createTreeNode(label, value, depth = 0, query = '', matches = [], path 
   return createPrimitiveNode(label, value, query, matches, path, indexMeta);
 }
 
+function createLargeLazyPrimitiveNode(label, value, path = [], indexMeta = '') {
+  const wrapper = document.createElement('div');
+  wrapper.className = 'node primitive-row';
+  wrapper.dataset.nodePath = encodePath(path);
+
+  const content = document.createElement('div');
+  content.className = 'primitive';
+
+  if (path.length > 0) {
+    const dragHandle = document.createElement('span');
+    dragHandle.className = 'node-drag-handle';
+    dragHandle.textContent = '::';
+    dragHandle.draggable = true;
+    dragHandle.dataset.dragSourcePath = encodePath(path);
+    dragHandle.title = 'Drag to move this node';
+    content.appendChild(dragHandle);
+  }
+
+  const key = document.createElement('span');
+  key.className = 'node-key';
+  key.textContent = label;
+
+  const type = document.createElement('span');
+  type.className = 'node-type';
+  type.textContent = 'Value';
+
+  const meta = document.createElement('span');
+  meta.className = 'node-meta';
+  meta.textContent = `${indexMeta ? `${indexMeta} • ` : ''}${formatPrimitive(value)}`;
+
+  const editButton = document.createElement('button');
+  editButton.type = 'button';
+  editButton.className = 'node-edit-btn';
+  editButton.textContent = 'Edit';
+  editButton.draggable = false;
+
+  const editor = document.createElement('div');
+  editor.className = 'node-inline-editor';
+
+  const keyInput = document.createElement('input');
+  keyInput.type = 'text';
+  keyInput.className = 'node-inline-input node-inline-key';
+  keyInput.value = label;
+  keyInput.disabled = !canRenamePath(path);
+
+  const valueInput = document.createElement('input');
+  valueInput.type = 'text';
+  valueInput.className = 'node-inline-input node-inline-value';
+  valueInput.value = typeof value === 'string' ? value : JSON.stringify(value);
+
+  const saveButton = document.createElement('button');
+  saveButton.type = 'button';
+  saveButton.className = 'node-inline-save';
+  saveButton.textContent = 'Save';
+
+  const cancelButton = document.createElement('button');
+  cancelButton.type = 'button';
+  cancelButton.className = 'node-inline-cancel';
+  cancelButton.textContent = 'Cancel';
+
+  editButton.addEventListener('click', (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    editor.classList.add('visible');
+    valueInput.focus();
+    valueInput.select();
+  });
+
+  saveButton.addEventListener('click', (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    const tab = currentTab();
+    if (!tab) {
+      return;
+    }
+    try {
+      runMutation(
+        tab,
+        (root) => {
+          const nextPath = renamePathKeyIfNeeded(path, keyInput.value, root);
+          const parsedValue = parseEditableValue(valueInput.value);
+          setNodeAtPath(root, nextPath, parsedValue);
+        },
+        'Updated element from Structure View.'
+      );
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setStatus(`Edit failed: ${message}`, 'error');
+    }
+  });
+
+  cancelButton.addEventListener('click', (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    editor.classList.remove('visible');
+  });
+
+  editor.append(keyInput, valueInput, saveButton, cancelButton);
+
+  content.append(key, type, meta, editButton);
+  wrapper.appendChild(content);
+  wrapper.appendChild(editor);
+  return wrapper;
+}
+
 function createLargeLazyNode(label, value, path = [], indexMeta = '') {
-  if (!isObject(value) && !Array.isArray(value)) {
-    return createPrimitiveNode(label, value, '', [], path, indexMeta);
+  const nodeSummary = summarizeNodeForLazy(value);
+  if (nodeSummary.kind === 'primitive') {
+    return createLargeLazyPrimitiveNode(label, value, path, indexMeta);
   }
 
   const wrapper = document.createElement('div');
   wrapper.className = 'node';
+  wrapper.dataset.nodePath = encodePath(path);
 
   const details = document.createElement('details');
   const pathToken = encodePath(path);
@@ -735,6 +968,17 @@ function createLargeLazyNode(label, value, path = [], indexMeta = '') {
 
   const summary = document.createElement('summary');
   summary.className = 'node-summary';
+  summary.dataset.dropTargetPath = pathToken;
+
+  if (path.length > 0) {
+    const dragHandle = document.createElement('span');
+    dragHandle.className = 'node-drag-handle';
+    dragHandle.textContent = '::';
+    dragHandle.draggable = true;
+    dragHandle.dataset.dragSourcePath = pathToken;
+    dragHandle.title = 'Drag to move this node';
+    summary.appendChild(dragHandle);
+  }
 
   const key = document.createElement('span');
   key.className = 'node-key';
@@ -742,20 +986,86 @@ function createLargeLazyNode(label, value, path = [], indexMeta = '') {
 
   const type = document.createElement('span');
   type.className = 'node-type';
-  type.textContent = Array.isArray(value) ? 'Array' : 'Object';
+  type.textContent = nodeSummary.kind === 'array' ? 'Array' : 'Object';
 
   const meta = document.createElement('span');
   meta.className = 'node-meta';
-  meta.textContent = Array.isArray(value)
-    ? `${indexMeta ? `${indexMeta} • ` : ''}${value.length} items`
-    : `${indexMeta ? `${indexMeta} • ` : ''}${Object.keys(value).length} fields`;
+  meta.textContent =
+    nodeSummary.kind === 'array'
+      ? `${indexMeta ? `${indexMeta} • ` : ''}${nodeSummary.count} items`
+      : `${indexMeta ? `${indexMeta} • ` : ''}${nodeSummary.count} fields`;
 
-  summary.append(key, type, meta);
+  const branchEdit = document.createElement('button');
+  branchEdit.type = 'button';
+  branchEdit.className = 'node-edit-btn';
+  branchEdit.textContent = 'Edit';
+  branchEdit.draggable = false;
+
+  const branchEditor = document.createElement('div');
+  branchEditor.className = 'node-inline-editor';
+
+  const branchKeyInput = document.createElement('input');
+  branchKeyInput.type = 'text';
+  branchKeyInput.className = 'node-inline-input node-inline-key';
+  branchKeyInput.value = label;
+  branchKeyInput.disabled = !canRenamePath(path);
+
+  const branchSave = document.createElement('button');
+  branchSave.type = 'button';
+  branchSave.className = 'node-inline-save';
+  branchSave.textContent = 'Save';
+
+  const branchCancel = document.createElement('button');
+  branchCancel.type = 'button';
+  branchCancel.className = 'node-inline-cancel';
+  branchCancel.textContent = 'Cancel';
+
+  branchEdit.addEventListener('click', (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    details.open = true;
+    branchEditor.classList.add('visible');
+    branchKeyInput.focus();
+    branchKeyInput.select();
+  });
+
+  branchSave.addEventListener('click', (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    const tab = currentTab();
+    if (!tab) {
+      return;
+    }
+    try {
+      runMutation(
+        tab,
+        (root) => {
+          renamePathKeyIfNeeded(path, branchKeyInput.value, root);
+        },
+        'Renamed element from Structure View.'
+      );
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setStatus(`Rename failed: ${message}`, 'error');
+    }
+  });
+
+  branchCancel.addEventListener('click', (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    branchEditor.classList.remove('visible');
+  });
+
+  branchEditor.append(branchKeyInput, branchSave, branchCancel);
+
+  summary.append(key, type, meta, branchEdit);
   details.appendChild(summary);
+  details.appendChild(branchEditor);
 
   const children = document.createElement('div');
   children.className = 'node-children';
   children.dataset.lazyChildren = pathToken;
+  children.dataset.dropTargetPath = pathToken;
 
   const hint = document.createElement('p');
   hint.className = 'node-meta';
@@ -768,9 +1078,12 @@ function createLargeLazyNode(label, value, path = [], indexMeta = '') {
 }
 
 function buildLazyEntries(node, path) {
+  const tab = currentTab();
   if (Array.isArray(node)) {
     return node.map((item, index) => ({
-      label: getArrayItemLabel(item),
+      label:
+        (tab && tab.arrayItemPathLabels && tab.arrayItemPathLabels.get(encodePath([...path, index]))) ||
+        getArrayItemLabel(item),
       value: item,
       path: [...path, index],
       indexMeta: `index ${index}`
@@ -794,7 +1107,7 @@ function removeLazyLoadMore(children) {
 
 function populateLazyChildren(details, reset = false) {
   const tab = currentTab();
-  if (!tab || !tab.largePreviewMode || tab.parsedData === null) {
+  if (!tab || !tab.largePreviewMode) {
     return;
   }
 
@@ -803,7 +1116,14 @@ function populateLazyChildren(details, reset = false) {
     return;
   }
 
-  const node = getNodeAtPath(tab.parsedData, path);
+  let node;
+  try {
+    node = getLargeModeNodeAtPath(tab, path);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    setStatus(`Large lazy load failed: ${message}`, 'error');
+    return;
+  }
   if (!isObject(node) && !Array.isArray(node)) {
     return;
   }
@@ -839,18 +1159,137 @@ function populateLazyChildren(details, reset = false) {
     moreButton.dataset.lazyTargetPath = details.dataset.lazyPath || '';
     moreButton.textContent = `Load more (${entries.length - nextOffset} remaining)`;
     children.appendChild(moreButton);
+  } else {
+    const allLoaded = document.createElement('p');
+    allLoaded.className = 'node-meta';
+    if (entries.length === 0) {
+      allLoaded.textContent = 'No items in this level.';
+    } else {
+      allLoaded.textContent = 'All items in this level loaded. Expand child nodes for more.';
+    }
+    children.appendChild(allLoaded);
   }
 }
 
-function renderLargeStructurePreview(data) {
+function renderLargeStructurePreview() {
   treeRoot.innerHTML = '';
-  const rootNode = createLargeLazyNode('root', data, []);
+  const tab = currentTab();
+  if (!tab) {
+    return;
+  }
+
+  let rootData;
+  try {
+    rootData = getLargeModeNodeAtPath(tab, []);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    setStatus(`Large lazy load failed: ${message}`, 'error');
+    treeRoot.innerHTML = '<p class="node-meta">Unable to load structure in large-file mode.</p>';
+    return;
+  }
+
+  const rootNode = createLargeLazyNode('root', rootData, []);
   const rootDetails = rootNode.querySelector('details');
   if (rootDetails) {
     rootDetails.open = true;
     populateLazyChildren(rootDetails, true);
   }
   treeRoot.appendChild(rootNode);
+  restoreLargeExpandedPaths();
+}
+
+function findLazyDetailsByPath(path) {
+  const token = encodePath(path);
+  return Array.from(treeRoot.querySelectorAll('details[data-lazy-path]')).find(
+    (node) => node.dataset.lazyPath === token
+  );
+}
+
+function ensureLazyChildLoaded(parentDetails, childPath) {
+  const tab = currentTab();
+  if (!tab || !tab.largePreviewMode) {
+    return null;
+  }
+
+  let childDetails = findLazyDetailsByPath(childPath);
+  if (childDetails) {
+    return childDetails;
+  }
+
+  const parentPath = decodePath(parentDetails.dataset.lazyPath || '');
+  if (!parentPath) {
+    return null;
+  }
+
+  let containerNode;
+  try {
+    containerNode = getLargeModeNodeAtPath(tab, parentPath);
+  } catch (error) {
+    return null;
+  }
+  if (!isObject(containerNode) && !Array.isArray(containerNode)) {
+    return null;
+  }
+
+  const totalEntries = buildLazyEntries(containerNode, parentPath).length;
+  while (!childDetails && Number(parentDetails.dataset.lazyOffset || '0') < totalEntries) {
+    populateLazyChildren(parentDetails, false);
+    childDetails = findLazyDetailsByPath(childPath);
+  }
+
+  return childDetails;
+}
+
+function restoreLargeExpandedPaths() {
+  const tab = currentTab();
+  if (!tab || !tab.largePreviewMode || !tab.expandedPaths || tab.expandedPaths.size === 0) {
+    return;
+  }
+
+  const decoded = Array.from(tab.expandedPaths)
+    .map((token) => decodePath(token))
+    .filter((path) => Array.isArray(path))
+    .sort((a, b) => a.length - b.length);
+
+  for (const path of decoded) {
+    if (path.length === 0) {
+      continue;
+    }
+
+    let parentPath = [];
+    let parentDetails = findLazyDetailsByPath(parentPath);
+    if (!parentDetails) {
+      continue;
+    }
+    if (!parentDetails.open) {
+      parentDetails.open = true;
+    }
+    if (parentDetails.dataset.lazyLoaded === 'false') {
+      populateLazyChildren(parentDetails, true);
+    }
+
+    let valid = true;
+    for (let i = 0; i < path.length; i += 1) {
+      const childPath = path.slice(0, i + 1);
+      const childDetails = ensureLazyChildLoaded(parentDetails, childPath);
+      if (!childDetails) {
+        valid = false;
+        break;
+      }
+      if (!childDetails.open) {
+        childDetails.open = true;
+      }
+      if (childDetails.dataset.lazyLoaded === 'false') {
+        populateLazyChildren(childDetails, true);
+      }
+      parentDetails = childDetails;
+      parentPath = childPath;
+    }
+
+    if (!valid) {
+      continue;
+    }
+  }
 }
 
 function clearActiveMatch() {
@@ -922,7 +1361,16 @@ function renderStructure(data, query = '', jumpToMatch = false, focusNextButton 
   treeRoot.innerHTML = '';
 
   if (tab.largePreviewMode) {
-    renderLargeStructurePreview(data);
+    if (tab.largeStructureSuspended) {
+      treeRoot.innerHTML =
+        '<p class="node-meta">Large structure is paused while text is focused. Click outside the editor to resume.</p>';
+      if (searchStatus) {
+        searchStatus.textContent = 'Large file lazy mode paused during text editing.';
+      }
+      updateMatchButtons();
+      return;
+    }
+    renderLargeStructurePreview();
     tab.matches = [];
     tab.activeMatchIndex = -1;
     if (searchStatus) {
@@ -1002,6 +1450,7 @@ function parseAndRender(focusNextButton = false) {
 
     if (!parsed.ok) {
       tab.parsedData = null;
+      tab.largeRootInfo = null;
       tab.matches = [];
       tab.activeMatchIndex = -1;
       setStatus(parsed.error, 'error');
@@ -1015,13 +1464,21 @@ function parseAndRender(focusNextButton = false) {
 
     if (isLargeText(source)) {
       tab.largePreviewMode = true;
-      tab.parsedData = parsed.data;
-      renderStructure(tab.parsedData, '', false, false);
+      tab.parsedData = null;
+      tab.largeRootInfo = {
+        mode: 'large-lazy'
+      };
+      tab.parsedFormat = parsed.format;
+      tab.parseFallback = Boolean(parsed.fallback);
+      tab.largeStructureSuspended = false;
+      renderStructure(null, '', false, false);
       setStatus(`Parsed as ${parsed.format}. Large lazy mode is active for performance.`, 'success');
       return;
     }
 
     tab.largePreviewMode = false;
+    tab.largeRootInfo = null;
+    tab.largeStructureSuspended = false;
     tab.parsedData = parsed.data;
     tab.parsedFormat = parsed.format;
     tab.parseFallback = Boolean(parsed.fallback);
@@ -1029,6 +1486,8 @@ function parseAndRender(focusNextButton = false) {
     setStatus(`Parsed as ${parsed.format}. Expand any box to inspect nested values.`, 'success');
   } catch (error) {
     tab.parsedData = null;
+    tab.largeRootInfo = null;
+    tab.largeStructureSuspended = false;
     tab.matches = [];
     tab.activeMatchIndex = -1;
     const message = error instanceof Error ? error.message : String(error);
@@ -1171,69 +1630,74 @@ function clearDropHighlights() {
 
 function applyMove(sourcePath, targetPath) {
   const tab = currentTab();
-  if (!tab || tab.parsedData === null) {
+  if (!tab) {
     return;
   }
 
-  if (sourcePath.length === 0) {
-    setStatus('Root node cannot be moved.', 'error');
-    return;
+  try {
+    runMutation(
+      tab,
+      (root) => {
+        if (sourcePath.length === 0) {
+          throw new Error('Root node cannot be moved.');
+        }
+
+        const sourceParentPath = sourcePath.slice(0, -1);
+        if (pathsEqual(sourcePath, targetPath) || pathsEqual(sourceParentPath, targetPath)) {
+          return;
+        }
+
+        if (isAncestorPath(sourcePath, targetPath)) {
+          throw new Error('Cannot move a node into its own descendant.');
+        }
+
+        const targetNode = getNodeAtPath(root, targetPath);
+        if (!Array.isArray(targetNode) && !isObject(targetNode)) {
+          throw new Error('Drop target must be an object or array.');
+        }
+
+        const sourceParent = getNodeAtPath(root, sourceParentPath);
+        const sourceKey = sourcePath[sourcePath.length - 1];
+        const sourceParentType = Array.isArray(sourceParent) ? 'array' : isObject(sourceParent) ? 'object' : null;
+        const sourceValue = getNodeAtPath(root, sourcePath);
+
+        if (!sourceParentType) {
+          throw new Error('Move failed: source parent is not a valid container.');
+        }
+
+        const moved = removeNodeAtPath(root, sourcePath);
+        if (!moved) {
+          throw new Error('Move failed: source path not found.');
+        }
+
+        if (Array.isArray(targetNode)) {
+          const sourceDisplayName =
+            sourceParentType === 'object'
+              ? String(sourceKey)
+              : sourceParentType === 'array'
+                ? tab.arrayItemPathLabels.get(encodePath(sourcePath)) || getArrayItemLabel(sourceValue)
+                : null;
+          const insertedIndex = targetNode.length;
+          targetNode.push(moved.value);
+          if (sourceDisplayName) {
+            tab.arrayItemPathLabels = new Map();
+            tab.arrayItemPathLabels.set(encodePath([...targetPath, insertedIndex]), sourceDisplayName);
+          }
+        } else {
+          const requestedKey =
+            sourceParentType === 'object'
+              ? String(sourceKey)
+              : deriveArrayItemKey(moved.value, typeof sourceKey === 'string' ? sourceKey : 'movedItem');
+          const nextKey = makeUniqueKey(targetNode, requestedKey);
+          targetNode[nextKey] = moved.value;
+        }
+      },
+      'Moved node in Structure View.'
+    );
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    setStatus(message, 'error');
   }
-
-  const sourceParentPath = sourcePath.slice(0, -1);
-  if (pathsEqual(sourcePath, targetPath) || pathsEqual(sourceParentPath, targetPath)) {
-    return;
-  }
-
-  if (isAncestorPath(sourcePath, targetPath)) {
-    setStatus('Cannot move a node into its own descendant.', 'error');
-    return;
-  }
-
-  const targetNode = getNodeAtPath(tab.parsedData, targetPath);
-  if (!Array.isArray(targetNode) && !isObject(targetNode)) {
-    setStatus('Drop target must be an object or array.', 'error');
-    return;
-  }
-
-  const sourceParent = getNodeAtPath(tab.parsedData, sourceParentPath);
-  const sourceKey = sourcePath[sourcePath.length - 1];
-  const sourceParentType = Array.isArray(sourceParent) ? 'array' : isObject(sourceParent) ? 'object' : null;
-  const sourceValue = getNodeAtPath(tab.parsedData, sourcePath);
-
-  if (!sourceParentType) {
-    setStatus('Move failed: source parent is not a valid container.', 'error');
-    return;
-  }
-
-  if (isObject(targetNode) && sourceParentType === 'object') {
-    const sourceKeyText = String(sourceKey);
-    if (Object.prototype.hasOwnProperty.call(targetNode, sourceKeyText)) {
-      setStatus(`Move blocked: "${sourceKeyText}" already exists in the target object.`, 'error');
-      return;
-    }
-  }
-
-  const moved = removeNodeAtPath(tab.parsedData, sourcePath);
-  if (!moved) {
-    setStatus('Move failed: source path not found.', 'error');
-    return;
-  }
-
-  if (Array.isArray(targetNode)) {
-    if (sourceParentType === 'object') {
-      targetNode.push({
-        [String(sourceKey)]: sourceValue
-      });
-    } else {
-      targetNode.push(moved.value);
-    }
-  } else {
-    const nextKey = sourceParentType === 'object' ? String(sourceKey) : makeUniqueKey(targetNode, 'movedItem');
-    targetNode[nextKey] = moved.value;
-  }
-
-  applyStructureChange('Moved node in Structure View.');
 }
 
 function handleDragStart(event) {
@@ -1241,7 +1705,7 @@ function handleDragStart(event) {
     return;
   }
 
-  const source = event.target.closest('[data-drag-source-path]');
+  const source = event.target.closest('.node-drag-handle[data-drag-source-path]');
   if (!source) {
     return;
   }
@@ -1363,12 +1827,15 @@ inputBox.addEventListener('input', () => {
   }
 
   tab.input = inputBox.value;
+  tab.arrayItemPathLabels = new Map();
   syncHighlight();
 
   if (isLargeText(tab.input)) {
     clearTimeout(parseDebounce);
     tab.parsedData = null;
+    tab.largeRootInfo = null;
     tab.largePreviewMode = false;
+    tab.largeStructureSuspended = false;
     treeRoot.innerHTML =
       '<p class="node-meta">Large file mode: structure parsing is paused. Click "Generate Structure" when ready.</p>';
     setStatus('Large file detected. Click "Generate Structure" to parse manually.', 'neutral');
@@ -1386,6 +1853,24 @@ inputBox.addEventListener('scroll', () => {
   }
   highlightLayer.scrollTop = inputBox.scrollTop;
   highlightLayer.scrollLeft = inputBox.scrollLeft;
+});
+
+inputBox.addEventListener('focus', () => {
+  const tab = currentTab();
+  if (!tab || !tab.largePreviewMode) {
+    return;
+  }
+  tab.largeStructureSuspended = true;
+  renderStructure(null, '', false, false);
+});
+
+inputBox.addEventListener('blur', () => {
+  const tab = currentTab();
+  if (!tab || !tab.largePreviewMode) {
+    return;
+  }
+  tab.largeStructureSuspended = false;
+  renderStructure(null, '', false, false);
 });
 
 if (renderBtn) {

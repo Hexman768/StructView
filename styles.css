@@ -343,11 +343,11 @@ body {
   display: inline-flex;
   gap: 0.45rem;
   align-items: center;
-  cursor: grab;
+  cursor: default;
 }
 
 .node-summary {
-  cursor: grab;
+  cursor: pointer;
 }
 
 .node-drag-handle {
