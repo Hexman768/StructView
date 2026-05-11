@@ -10,6 +10,7 @@ const searchNextButton = document.getElementById('tree-search-next');
 const searchClearButton = document.getElementById('tree-search-clear');
 const searchStatus = document.getElementById('search-status');
 const renderBtn = document.getElementById('render-btn') || document.getElementById('generate-btn');
+const openFileButton = document.getElementById('open-file-btn');
 const clearTextButton = document.getElementById('clear-text-btn');
 const showTextPaneButton = document.getElementById('show-text-pane-btn');
 const bodyEl = document.body;
@@ -884,6 +885,38 @@ function parseAndRender(focusNextButton = false) {
   }
 }
 
+function loadOpenedFile(payload) {
+  const activeTab = currentTab();
+  if (!activeTab || !payload || typeof payload.content !== 'string') {
+    return;
+  }
+
+  const activeHasContent = Boolean(activeTab.input && activeTab.input.trim()) || activeTab.parsedData !== null;
+  const tab = activeHasContent ? addTab('') : activeTab;
+
+  clearTimeout(parseDebounce);
+  tab.input = payload.content;
+  tab.search = '';
+  tab.matches = [];
+  tab.activeMatchIndex = -1;
+  tab.expandedPaths = new Set();
+  tab.hideEditorForLargeFile = false;
+  tab.showEditorOverride = false;
+
+  if (typeof payload.fileName === 'string' && payload.fileName.trim()) {
+    tab.title = payload.fileName.trim();
+    renderTabBar();
+  }
+
+  inputBox.value = tab.input;
+  if (searchInput) {
+    searchInput.value = '';
+  }
+  syncHighlight();
+  applyPaneVisibility(tab);
+  parseAndRender(false);
+}
+
 function syncHighlight() {
   const tab = currentTab();
   const text = tab ? tab.input : '';
@@ -968,6 +1001,7 @@ function addTab(initialInput = '') {
   const tab = makeTabState(initialInput);
   tabs.push(tab);
   switchTab(tab.id);
+  return tab;
 }
 
 function closeTab(id) {
@@ -1198,6 +1232,32 @@ if (renderBtn) {
   renderBtn.addEventListener('click', () => parseAndRender(true));
 }
 
+if (openFileButton) {
+  openFileButton.addEventListener('click', async () => {
+    const api = window.structViewApi;
+    if (!api || typeof api.openFileDialog !== 'function') {
+      setStatus('Open file is only available in the desktop app.', 'error');
+      return;
+    }
+
+    try {
+      const result = await api.openFileDialog();
+      if (!result || result.canceled) {
+        return;
+      }
+      if (!result.ok) {
+        const message = result.error || 'Unable to open file.';
+        setStatus(`Open failed: ${message}`, 'error');
+        return;
+      }
+      loadOpenedFile(result);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setStatus(`Open failed: ${message}`, 'error');
+    }
+  });
+}
+
 if (clearTextButton) {
   clearTextButton.addEventListener('click', () => {
     const tab = currentTab();
@@ -1309,6 +1369,13 @@ inputBox.addEventListener('keydown', (event) => {
 if (addTabButton) {
   addTabButton.addEventListener('click', () => {
     addTab('');
+  });
+}
+
+const api = window.structViewApi;
+if (api && typeof api.onOpenFile === 'function') {
+  api.onOpenFile((payload) => {
+    loadOpenedFile(payload);
   });
 }
 
