@@ -77,5 +77,20 @@ contextBridge.exposeInMainWorld('structViewApi', {
       ipcRenderer.removeListener('menu-open-file', listener);
     };
   },
-  openFileDialog: () => ipcRenderer.invoke('open-file-dialog')
+  openFileDialog: () => ipcRenderer.invoke('open-file-dialog'),
+  saveFileDialog: (request) => ipcRenderer.invoke('save-file-dialog', request || {}),
+  onRequestSave: (handler) => {
+    if (typeof handler !== 'function') {
+      return () => {};
+    }
+
+    const listener = () => {
+      handler();
+    };
+
+    ipcRenderer.on('menu-save-file-request', listener);
+    return () => {
+      ipcRenderer.removeListener('menu-save-file-request', listener);
+    };
+  }
 });
