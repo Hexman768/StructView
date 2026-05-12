@@ -1,4 +1,4 @@
-const { contextBridge } = require('electron');
+const { contextBridge, ipcRenderer } = require('electron');
 const fs = require('fs');
 const path = require('path');
 const YAML = require('yaml');
@@ -62,5 +62,20 @@ function stringifyYaml(value) {
 contextBridge.exposeInMainWorld('structViewApi', {
   parseInput,
   getSettings,
-  stringifyYaml
+  stringifyYaml,
+  onOpenFile: (handler) => {
+    if (typeof handler !== 'function') {
+      return () => {};
+    }
+
+    const listener = (_event, payload) => {
+      handler(payload);
+    };
+
+    ipcRenderer.on('menu-open-file', listener);
+    return () => {
+      ipcRenderer.removeListener('menu-open-file', listener);
+    };
+  },
+  openFileDialog: () => ipcRenderer.invoke('open-file-dialog')
 });
