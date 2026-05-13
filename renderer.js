@@ -1,6 +1,7 @@
 const tabsBar = document.getElementById('tabs-bar');
 const addTabButton = document.getElementById('add-tab-btn');
 const inputBox = document.getElementById('input-box');
+const lineNumberLayer = document.getElementById('line-number-layer');
 const highlightLayer = document.getElementById('highlight-layer');
 const treeRoot = document.getElementById('tree-root');
 const statusEl = document.getElementById('status');
@@ -22,6 +23,7 @@ let nextTabId = 1;
 const tabs = [];
 let activeTabId = null;
 let dragState = null;
+let renderedLineNumberCount = -1;
 
 function loadAppSettings() {
   const defaults = {
@@ -1005,7 +1007,31 @@ function loadOpenedFile(payload) {
 function syncHighlight() {
   const tab = currentTab();
   const text = tab ? tab.input : '';
+  updateLineNumbers(text);
   highlightLayer.innerHTML = `${highlightInput(text)}\n`;
+  if (lineNumberLayer) {
+    lineNumberLayer.scrollTop = inputBox.scrollTop;
+  }
+  highlightLayer.scrollTop = inputBox.scrollTop;
+  highlightLayer.scrollLeft = inputBox.scrollLeft;
+}
+
+function updateLineNumbers(text) {
+  if (!lineNumberLayer) {
+    return;
+  }
+
+  const lineCount = Math.max(1, countLines(text));
+  if (lineCount === renderedLineNumberCount) {
+    return;
+  }
+
+  const numbers = new Array(lineCount);
+  for (let i = 0; i < lineCount; i += 1) {
+    numbers[i] = String(i + 1);
+  }
+  lineNumberLayer.textContent = `${numbers.join('\n')}\n`;
+  renderedLineNumberCount = lineCount;
 }
 
 function renderTabBar() {
@@ -1313,6 +1339,9 @@ inputBox.addEventListener('input', () => {
 });
 
 inputBox.addEventListener('scroll', () => {
+  if (lineNumberLayer) {
+    lineNumberLayer.scrollTop = inputBox.scrollTop;
+  }
   highlightLayer.scrollTop = inputBox.scrollTop;
   highlightLayer.scrollLeft = inputBox.scrollLeft;
 });
