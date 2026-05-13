@@ -442,9 +442,31 @@ function parseEditableValue(rawInput, originalValue) {
     return '';
   }
 
-  // Keep string fields as strings unless the user explicitly enters quoted JSON.
-  // This avoids accidental type changes (e.g. "123" becoming 123).
-  if (typeof originalValue === 'string' && !(raw.startsWith('"') && raw.endsWith('"'))) {
+  const isDoubleQuoted = raw.startsWith('"') && raw.endsWith('"');
+  const isSingleQuoted = raw.startsWith("'") && raw.endsWith("'");
+
+  if (isDoubleQuoted) {
+    return JSON.parse(raw);
+  }
+
+  if (isSingleQuoted && raw.length >= 2) {
+    return raw.slice(1, -1).replace(/\\'/g, "'");
+  }
+
+  // If the original value is a string and user keeps it unquoted, preserve string type
+  // unless they've explicitly entered a valid non-string literal.
+  if (typeof originalValue === 'string') {
+    const manualTypeChangeLiteral =
+      raw === 'null' || raw === 'true' || raw === 'false' || /^-?\d+(?:\.\d+)?(?:[eE][+\-]?\d+)?$/.test(raw);
+
+    if (manualTypeChangeLiteral) {
+      return JSON.parse(raw);
+    }
+
+    if (raw.startsWith('{') || raw.startsWith('[')) {
+      return JSON.parse(raw);
+    }
+
     return rawInput;
   }
 
@@ -610,7 +632,7 @@ function createPrimitiveNode(label, value, query, matches, path, indexMeta = '')
   const valueInput = document.createElement('input');
   valueInput.type = 'text';
   valueInput.className = 'node-inline-input node-inline-value';
-  valueInput.value = typeof value === 'string' ? value : JSON.stringify(value);
+  valueInput.value = JSON.stringify(value);
 
   const saveButton = document.createElement('button');
   saveButton.type = 'button';
