@@ -435,11 +435,17 @@ function canRenamePath(path) {
   return isObject(parent);
 }
 
-function parseEditableValue(rawInput) {
+function parseEditableValue(rawInput, originalValue) {
   const raw = rawInput.trim();
 
   if (!raw) {
     return '';
+  }
+
+  // Keep string fields as strings unless the user explicitly enters quoted JSON.
+  // This avoids accidental type changes (e.g. "123" becoming 123).
+  if (typeof originalValue === 'string' && !(raw.startsWith('"') && raw.endsWith('"'))) {
+    return rawInput;
   }
 
   const looksLikeJsonLiteral =
@@ -623,7 +629,7 @@ function createPrimitiveNode(label, value, query, matches, path, indexMeta = '')
     }
     try {
       const nextPath = renamePathKeyIfNeeded(path, keyInput.value);
-      const parsedValue = parseEditableValue(valueInput.value);
+      const parsedValue = parseEditableValue(valueInput.value, value);
       tab.parsedData = setNodeAtPath(tab.parsedData, nextPath, parsedValue);
       applyStructureChange('Updated element from Structure View.');
     } catch (error) {
