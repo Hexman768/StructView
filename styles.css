@@ -1,5 +1,6 @@
 :root {
   color-scheme: dark;
+  --line-gutter-width: 4.2rem;
   --bg: #071019;
   --bg-soft: #0f1b2c;
   --panel: #111f31;
@@ -201,16 +202,29 @@ body.structure-only-mode .editor-panel {
   background: #06101a;
 }
 
+.line-number-layer,
 .highlight-layer,
 .input-box {
   margin: 0;
   border: none;
   width: 100%;
   min-height: 100%;
-  padding: 0.9rem;
+  padding: 0.9rem 0.9rem 0.9rem calc(0.9rem + var(--line-gutter-width));
   font: 500 13px/1.55 "JetBrains Mono", "Fira Code", "SFMono-Regular", Menlo, Consolas, monospace;
   tab-size: 2;
   white-space: pre;
+}
+
+.line-number-layer {
+  position: absolute;
+  inset: 0;
+  padding: 0.9rem 0.45rem 0.9rem 0.2rem;
+  width: var(--line-gutter-width);
+  border-right: 1px solid #1c3349;
+  text-align: right;
+  color: #6f8ea6;
+  pointer-events: none;
+  overflow: hidden;
 }
 
 .highlight-layer {
