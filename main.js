@@ -82,6 +82,17 @@ function createAppMenu(getFocusedWindow) {
             }
           }
         },
+        {
+          label: 'Save File',
+          accelerator: 'CmdOrCtrl+S',
+          click: () => {
+            const window = getFocusedWindow();
+            if (!window) {
+              return;
+            }
+            window.webContents.send('menu-save-file-request');
+          }
+        },
         { type: 'separator' },
         process.platform === 'darwin' ? { role: 'close' } : { role: 'quit' }
       ]
@@ -137,6 +148,50 @@ app.whenReady().then(() => {
         filePath: selectedPath,
         fileName: path.basename(selectedPath),
         content
+      };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      return { ok: false, error: message };
+    }
+  });
+
+  ipcMain.handle('save-file-dialog', async (_event, request) => {
+    const window = BrowserWindow.getFocusedWindow() || mainWindow;
+    if (!window) {
+      return { ok: false, error: 'No active window.' };
+    }
+
+    const content = typeof request?.content === 'string' ? request.content : '';
+    const existingPath = typeof request?.filePath === 'string' ? request.filePath : '';
+    const suggestedFileName = typeof request?.fileName === 'string' ? request.fileName : 'structview-data.json';
+
+    try {
+      if (existingPath) {
+        fs.writeFileSync(existingPath, content, 'utf8');
+        return {
+          ok: true,
+          filePath: existingPath,
+          fileName: path.basename(existingPath)
+        };
+      }
+
+      const saveResult = await dialog.showSaveDialog(window, {
+        defaultPath: suggestedFileName,
+        filters: [
+          { name: 'Structured Data', extensions: ['json', 'yaml', 'yml'] },
+          { name: 'All Files', extensions: ['*'] }
+        ]
+      });
+
+      if (saveResult.canceled || !saveResult.filePath) {
+        return { ok: false, canceled: true };
+      }
+
+      fs.writeFileSync(saveResult.filePath, content, 'utf8');
+      return {
+        ok: true,
+        filePath: saveResult.filePath,
+        fileName: path.basename(saveResult.filePath)
       };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);

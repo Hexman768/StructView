@@ -11,6 +11,7 @@ const searchClearButton = document.getElementById('tree-search-clear');
 const searchStatus = document.getElementById('search-status');
 const renderBtn = document.getElementById('render-btn') || document.getElementById('generate-btn');
 const openFileButton = document.getElementById('open-file-btn');
+const saveFileButton = document.getElementById('save-file-btn');
 const clearTextButton = document.getElementById('clear-text-btn');
 const showTextPaneButton = document.getElementById('show-text-pane-btn');
 const bodyEl = document.body;
@@ -61,6 +62,10 @@ function makeTabState(initialInput = '') {
     parsedFormat: 'JSON',
     parseFallback: false,
     expandedPaths: new Set(),
+    sourceFilePath: null,
+    sourceFileName: null,
+    savedInputSnapshot: initialInput,
+    dirty: false,
     hideEditorForLargeFile: false,
     showEditorOverride: false
   };
@@ -89,6 +94,79 @@ function applyPaneVisibility(tab = currentTab()) {
   bodyEl.classList.toggle('structure-only-mode', hideEditor);
   if (showTextPaneButton) {
     showTextPaneButton.hidden = !hideEditor;
+  }
+}
+
+function refreshDirtyState(tab) {
+  if (!tab) {
+    return;
+  }
+  tab.dirty = tab.input !== (tab.savedInputSnapshot || '');
+}
+
+function updateSaveButton(tab = currentTab()) {
+  if (!saveFileButton) {
+    return;
+  }
+  saveFileButton.hidden = !(tab && tab.dirty);
+}
+
+function defaultSaveNameForTab(tab) {
+  if (!tab) {
+    return 'structview-data.json';
+  }
+  if (tab.sourceFileName) {
+    return tab.sourceFileName;
+  }
+
+  const base = (tab.title || 'structview-data')
+    .replace(/[\\/:*?"<>|]/g, '-')
+    .replace(/\\s+/g, ' ')
+    .trim();
+  const ext = tab.parsedFormat === 'YAML' ? 'yaml' : 'json';
+  return `${base || 'structview-data'}.${ext}`;
+}
+
+async function saveCurrentTab() {
+  const tab = currentTab();
+  if (!tab) {
+    return;
+  }
+
+  const api = window.structViewApi;
+  if (!api || typeof api.saveFileDialog !== 'function') {
+    setStatus('Save is only available in the desktop app.', 'error');
+    return;
+  }
+
+  try {
+    const result = await api.saveFileDialog({
+      content: tab.input,
+      filePath: tab.sourceFilePath || '',
+      fileName: defaultSaveNameForTab(tab)
+    });
+
+    if (!result || result.canceled) {
+      return;
+    }
+    if (!result.ok) {
+      setStatus(`Save failed: ${result.error || 'Unknown error.'}`, 'error');
+      return;
+    }
+
+    tab.sourceFilePath = result.filePath || tab.sourceFilePath;
+    tab.sourceFileName = result.fileName || tab.sourceFileName;
+    if (tab.sourceFileName) {
+      tab.title = tab.sourceFileName;
+      renderTabBar();
+    }
+    tab.savedInputSnapshot = tab.input;
+    refreshDirtyState(tab);
+    updateSaveButton(tab);
+    setStatus('File saved successfully.', 'success');
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    setStatus(`Save failed: ${message}`, 'error');
   }
 }
 
@@ -389,7 +467,9 @@ function serializeParsedData(tab) {
 
 function refreshTextPaneFromTab(tab) {
   tab.input = serializeParsedData(tab);
+  refreshDirtyState(tab);
   inputBox.value = tab.input;
+  updateSaveButton(tab);
   syncHighlight();
 }
 
@@ -902,6 +982,10 @@ function loadOpenedFile(payload) {
   tab.expandedPaths = new Set();
   tab.hideEditorForLargeFile = false;
   tab.showEditorOverride = false;
+  tab.sourceFilePath = typeof payload.filePath === 'string' && payload.filePath ? payload.filePath : null;
+  tab.sourceFileName = typeof payload.fileName === 'string' && payload.fileName ? payload.fileName : null;
+  tab.savedInputSnapshot = tab.input;
+  refreshDirtyState(tab);
 
   if (typeof payload.fileName === 'string' && payload.fileName.trim()) {
     tab.title = payload.fileName.trim();
@@ -914,6 +998,7 @@ function loadOpenedFile(payload) {
   }
   syncHighlight();
   applyPaneVisibility(tab);
+  updateSaveButton(tab);
   parseAndRender(false);
 }
 
@@ -969,6 +1054,8 @@ function hydrateActiveTab() {
   }
 
   applyPaneVisibility(tab);
+  refreshDirtyState(tab);
+  updateSaveButton(tab);
   inputBox.value = tab.input;
   if (searchInput) {
     searchInput.value = tab.search;
@@ -1214,6 +1301,8 @@ inputBox.addEventListener('input', () => {
   }
 
   tab.input = inputBox.value;
+  refreshDirtyState(tab);
+  updateSaveButton(tab);
   tab.hideEditorForLargeFile = false;
   tab.showEditorOverride = false;
   applyPaneVisibility(tab);
@@ -1273,10 +1362,12 @@ if (clearTextButton) {
     tab.expandedPaths = new Set();
     tab.hideEditorForLargeFile = false;
     tab.showEditorOverride = false;
+    refreshDirtyState(tab);
 
     inputBox.value = '';
     syncHighlight();
     applyPaneVisibility(tab);
+    updateSaveButton(tab);
     treeRoot.innerHTML = '<p class="node-meta">Structure will appear here after successful parsing.</p>';
     if (searchStatus) {
       searchStatus.textContent = tab.search.trim() ? `No matches for "${tab.search.trim()}".` : 'Showing full structure.';
@@ -1296,6 +1387,12 @@ if (showTextPaneButton) {
     tab.showEditorOverride = true;
     applyPaneVisibility(tab);
     inputBox.focus();
+  });
+}
+
+if (saveFileButton) {
+  saveFileButton.addEventListener('click', () => {
+    saveCurrentTab();
   });
 }
 
@@ -1378,11 +1475,17 @@ if (api && typeof api.onOpenFile === 'function') {
     loadOpenedFile(payload);
   });
 }
+if (api && typeof api.onRequestSave === 'function') {
+  api.onRequestSave(() => {
+    saveCurrentTab();
+  });
+}
 
 const appSettings = loadAppSettings();
 const initialInput = appSettings.startWithEmptyInput ? '' : String(appSettings.defaultInput || '');
 addTab(initialInput);
 applyPaneVisibility(currentTab());
+updateSaveButton(currentTab());
 if (initialInput.trim()) {
   parseAndRender(false);
 }
