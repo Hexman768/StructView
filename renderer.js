@@ -3,6 +3,7 @@ const addTabButton = document.getElementById('add-tab-btn');
 const inputBox = document.getElementById('input-box');
 const lineNumberLayer = document.getElementById('line-number-layer');
 const highlightLayer = document.getElementById('highlight-layer');
+const editorWrap = document.getElementById('editor-wrap');
 const treeRoot = document.getElementById('tree-root');
 const statusEl = document.getElementById('status');
 const searchInput = document.getElementById('tree-search');
@@ -17,6 +18,7 @@ const clearTextButton = document.getElementById('clear-text-btn');
 const showTextPaneButton = document.getElementById('show-text-pane-btn');
 const bodyEl = document.body;
 const LARGE_FILE_HIDE_INPUT_LINE_THRESHOLD = 10000;
+const LARGE_EDIT_CHAR_THRESHOLD = 200000;
 
 let parseDebounce;
 let nextTabId = 1;
@@ -24,6 +26,7 @@ const tabs = [];
 let activeTabId = null;
 let dragState = null;
 let renderedLineNumberCount = -1;
+let parseRequestId = 0;
 
 function loadAppSettings() {
   const defaults = {
@@ -85,6 +88,16 @@ function countLines(text) {
     }
   }
   return lines;
+}
+
+function isLargeInputText(text) {
+  if (typeof text !== 'string') {
+    return false;
+  }
+  if (text.length >= LARGE_EDIT_CHAR_THRESHOLD) {
+    return true;
+  }
+  return countLines(text) >= LARGE_FILE_HIDE_INPUT_LINE_THRESHOLD;
 }
 
 function shouldHideEditor(tab) {
@@ -919,39 +932,56 @@ function renderStructure(data, query = '', jumpToMatch = false, focusNextButton 
   }
 }
 
-function parseSource(source) {
+async function parseSource(source) {
   const api = window.structViewApi;
 
+  if (api && typeof api.parseInputAsync === 'function') {
+    return api.parseInputAsync(source);
+  }
+
   if (api && typeof api.parseInput === 'function') {
-    return api.parseInput(source);
+    return Promise.resolve(api.parseInput(source));
   }
 
   try {
-    return {
+    return Promise.resolve({
       ok: true,
       format: 'JSON',
       data: JSON.parse(source),
       fallback: true
-    };
+    });
   } catch (jsonError) {
-    return {
+    return Promise.resolve({
       ok: false,
       error:
         'Parser unavailable in browser preview mode. JSON works here, but YAML needs the Electron app (`npm start`). ' +
         `JSON error: ${jsonError.message}`
-    };
+    });
   }
 }
 
-function parseAndRender(focusNextButton = false) {
+async function parseAndRender(focusNextButton = false) {
   const tab = currentTab();
   if (!tab) {
     return;
   }
 
+  const requestId = ++parseRequestId;
+  const source = tab.input;
+
+  if (!focusNextButton && isLargeInputText(source)) {
+    setStatus('Large file edit mode: parsing paused while typing. Click "Generate Structure" to refresh.', 'neutral');
+    return;
+  }
+
   try {
-    const source = tab.input;
-    const parsed = parseSource(source);
+    if (!focusNextButton) {
+      setStatus('Parsing input...', 'neutral');
+    }
+    const parsed = await parseSource(source);
+    if (requestId !== parseRequestId || tab !== currentTab()) {
+      return;
+    }
 
     if (!parsed.ok) {
       tab.parsedData = null;
@@ -1035,6 +1065,20 @@ function loadOpenedFile(payload) {
 function syncHighlight() {
   const tab = currentTab();
   const text = tab ? tab.input : '';
+  const plainTextMode = isLargeInputText(text);
+  if (editorWrap) {
+    editorWrap.classList.toggle('plain-text-mode', plainTextMode);
+  }
+  if (plainTextMode) {
+    updateLineNumbers(text);
+    highlightLayer.textContent = '\n';
+    if (lineNumberLayer) {
+      lineNumberLayer.scrollTop = inputBox.scrollTop;
+    }
+    highlightLayer.scrollTop = inputBox.scrollTop;
+    highlightLayer.scrollLeft = inputBox.scrollLeft;
+    return;
+  }
   updateLineNumbers(text);
   highlightLayer.innerHTML = `${highlightInput(text)}\n`;
   if (lineNumberLayer) {
@@ -1363,7 +1407,13 @@ inputBox.addEventListener('input', () => {
   syncHighlight();
 
   clearTimeout(parseDebounce);
-  parseDebounce = setTimeout(() => parseAndRender(false), 250);
+  if (isLargeInputText(tab.input)) {
+    setStatus('Large file edit mode: parsing paused while typing. Click "Generate Structure" to refresh.', 'neutral');
+    return;
+  }
+  parseDebounce = setTimeout(() => {
+    parseAndRender(false);
+  }, 250);
 });
 
 inputBox.addEventListener('scroll', () => {

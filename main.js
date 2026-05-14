@@ -1,6 +1,7 @@
 const { app, BrowserWindow, Menu, dialog, ipcMain, nativeImage } = require('electron');
 const fs = require('fs');
 const path = require('path');
+const { Worker } = require('worker_threads');
 const iconPath = path.join(__dirname, 'assets', 'structview-logo.png');
 
 function createWindow() {
@@ -22,6 +23,37 @@ function createWindow() {
 
   window.loadFile(path.join(__dirname, 'index.html'));
   return window;
+}
+
+function readFileViaStream(filePath) {
+  return new Promise((resolve, reject) => {
+    const chunks = [];
+    const stream = fs.createReadStream(filePath, { encoding: 'utf8' });
+    stream.on('data', (chunk) => chunks.push(chunk));
+    stream.on('error', (error) => reject(error));
+    stream.on('end', () => resolve(chunks.join('')));
+  });
+}
+
+function parseInputInWorker(text) {
+  return new Promise((resolve, reject) => {
+    const workerPath = path.join(__dirname, 'parse-worker.js');
+    const worker = new Worker(workerPath, {
+      workerData: { text: String(text || '') }
+    });
+
+    worker.once('message', (result) => {
+      resolve(result);
+    });
+    worker.once('error', (error) => {
+      reject(error);
+    });
+    worker.once('exit', (code) => {
+      if (code !== 0) {
+        reject(new Error(`Parse worker exited with code ${code}`));
+      }
+    });
+  });
 }
 
 function createAppMenu(getFocusedWindow) {
@@ -70,7 +102,7 @@ function createAppMenu(getFocusedWindow) {
 
             const selectedPath = result.filePaths[0];
             try {
-              const content = fs.readFileSync(selectedPath, 'utf8');
+              const content = await readFileViaStream(selectedPath);
               window.webContents.send('menu-open-file', {
                 filePath: selectedPath,
                 fileName: path.basename(selectedPath),
@@ -142,7 +174,7 @@ app.whenReady().then(() => {
       }
 
       const selectedPath = result.filePaths[0];
-      const content = fs.readFileSync(selectedPath, 'utf8');
+      const content = await readFileViaStream(selectedPath);
       return {
         ok: true,
         filePath: selectedPath,
@@ -167,7 +199,7 @@ app.whenReady().then(() => {
 
     try {
       if (existingPath) {
-        fs.writeFileSync(existingPath, content, 'utf8');
+        await fs.promises.writeFile(existingPath, content, 'utf8');
         return {
           ok: true,
           filePath: existingPath,
@@ -187,7 +219,7 @@ app.whenReady().then(() => {
         return { ok: false, canceled: true };
       }
 
-      fs.writeFileSync(saveResult.filePath, content, 'utf8');
+      await fs.promises.writeFile(saveResult.filePath, content, 'utf8');
       return {
         ok: true,
         filePath: saveResult.filePath,
@@ -196,6 +228,15 @@ app.whenReady().then(() => {
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       return { ok: false, error: message };
+    }
+  });
+
+  ipcMain.handle('parse-input-async', async (_event, text) => {
+    try {
+      return await parseInputInWorker(text);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      return { ok: false, error: `Parser worker failed: ${message}` };
     }
   });
 
