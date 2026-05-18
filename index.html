@@ -17,16 +17,21 @@
       <button id="add-tab-btn" class="add-tab-btn" type="button">+ New Tab</button>
     </section>
 
+    <section class="app-toolbar">
+      <div class="toolbar-actions">
+        <button id="open-file-btn" class="secondary-btn" type="button">Open File</button>
+        <button id="save-file-btn" class="secondary-btn" type="button" hidden>Save</button>
+        <button id="clear-text-btn" class="secondary-btn" type="button">Clear All</button>
+        <button id="render-btn" type="button">Generate Structure</button>
+        <button id="hide-text-pane-btn" class="secondary-btn" type="button">Hide Text Pane</button>
+        <button id="show-text-pane-btn" class="secondary-btn" type="button" hidden>Show Text Pane</button>
+      </div>
+    </section>
+
     <main class="layout">
       <section class="panel editor-panel">
         <div class="panel-title-row">
           <h2>Input</h2>
-          <div class="panel-actions">
-            <button id="open-file-btn" class="secondary-btn" type="button">Open File</button>
-            <button id="save-file-btn" class="secondary-btn" type="button" hidden>Save</button>
-            <button id="clear-text-btn" class="secondary-btn" type="button">Clear All</button>
-            <button id="render-btn" type="button">Generate Structure</button>
-          </div>
         </div>
 
         <div class="editor-wrap" id="editor-wrap">
@@ -49,13 +54,10 @@
       <section class="panel viewer-panel">
         <div class="panel-title-row">
           <h2>Structure</h2>
-          <div class="viewer-tools">
-            <button id="show-text-pane-btn" class="show-text-pane-btn" type="button" hidden>Show Text Pane</button>
-            <div class="legend">
-              <span class="badge object">Object</span>
-              <span class="badge array">Array</span>
-              <span class="badge value">Value</span>
-            </div>
+          <div class="legend">
+            <span class="badge object">Object</span>
+            <span class="badge array">Array</span>
+            <span class="badge value">Value</span>
           </div>
         </div>
 

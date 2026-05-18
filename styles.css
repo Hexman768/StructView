@@ -49,6 +49,21 @@ body {
   gap: 0.7rem;
 }
 
+.app-toolbar {
+  margin: 0.35rem 1.5rem 0;
+  padding: 0.55rem 0.75rem;
+  border: 1px solid #274869;
+  border-radius: 12px;
+  background: linear-gradient(180deg, rgba(14, 31, 48, 0.92), rgba(9, 20, 33, 0.92));
+}
+
+.toolbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  flex-wrap: wrap;
+}
+
 .tabs-bar {
   display: flex;
   gap: 0.45rem;
@@ -101,7 +116,7 @@ body {
   grid-template-columns: minmax(340px, 45%) 1fr;
   gap: 1rem;
   padding: 0.75rem 1.5rem 1.5rem;
-  height: calc(100vh - 100px);
+  height: calc(100vh - 170px);
 }
 
 body.structure-only-mode .layout {
@@ -135,33 +150,6 @@ body.structure-only-mode .editor-panel {
   font-size: 1rem;
   letter-spacing: 0.04em;
   text-transform: uppercase;
-}
-
-.panel-actions {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.55rem;
-}
-
-.viewer-tools {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.6rem;
-}
-
-.show-text-pane-btn {
-  border: 1px solid #3c678a;
-  background: #13324a;
-  color: #e8f4ff;
-  border-radius: 10px;
-  padding: 0.45rem 0.7rem;
-  font-size: 0.76rem;
-  font-weight: 700;
-  cursor: pointer;
-}
-
-.show-text-pane-btn:hover {
-  filter: brightness(1.08);
 }
 
 #render-btn {
@@ -548,6 +536,10 @@ body.structure-only-mode .editor-panel {
 }
 
 @media (max-width: 980px) {
+  .app-toolbar {
+    margin: 0.35rem 0.9rem 0;
+  }
+
   .layout {
     grid-template-columns: 1fr;
     height: auto;
