@@ -355,6 +355,8 @@ body.structure-only-mode .editor-panel {
 }
 
 .active-match {
+  color: #ffe28f;
+  text-shadow: 0 0 8px rgba(255, 226, 143, 0.3);
   background: rgba(255, 226, 143, 0.22);
   border-radius: 4px;
 }
@@ -388,11 +390,11 @@ body.structure-only-mode .editor-panel {
   display: inline-flex;
   gap: 0.45rem;
   align-items: center;
-  cursor: grab;
+  cursor: default;
 }
 
 .node-summary {
-  cursor: grab;
+  cursor: pointer;
 }
 
 .node-drag-handle {
