@@ -13,6 +13,7 @@ const searchClearButton = document.getElementById('tree-search-clear');
 const searchStatus = document.getElementById('search-status');
 const renderBtn = document.getElementById('render-btn') || document.getElementById('generate-btn');
 const openFileButton = document.getElementById('open-file-btn');
+const hideTextPaneButton = document.getElementById('hide-text-pane-btn');
 const saveFileButton = document.getElementById('save-file-btn');
 const clearTextButton = document.getElementById('clear-text-btn');
 const showTextPaneButton = document.getElementById('show-text-pane-btn');
@@ -71,8 +72,7 @@ function makeTabState(initialInput = '') {
     sourceFileName: null,
     savedInputSnapshot: initialInput,
     dirty: false,
-    hideEditorForLargeFile: false,
-    showEditorOverride: false
+    hideEditorForLargeFile: false
   };
 }
 
@@ -101,7 +101,7 @@ function isLargeInputText(text) {
 }
 
 function shouldHideEditor(tab) {
-  return Boolean(tab && tab.hideEditorForLargeFile && !tab.showEditorOverride);
+  return Boolean(tab && tab.hideEditorForLargeFile);
 }
 
 function applyPaneVisibility(tab = currentTab()) {
@@ -985,8 +985,6 @@ async function parseAndRender(focusNextButton = false) {
 
     if (!parsed.ok) {
       tab.parsedData = null;
-      tab.hideEditorForLargeFile = false;
-      tab.showEditorOverride = false;
       tab.matches = [];
       tab.activeMatchIndex = -1;
       setStatus(parsed.error, 'error');
@@ -1002,15 +1000,11 @@ async function parseAndRender(focusNextButton = false) {
     tab.parsedData = parsed.data;
     tab.parsedFormat = parsed.format;
     tab.parseFallback = Boolean(parsed.fallback);
-    tab.hideEditorForLargeFile = countLines(source) >= LARGE_FILE_HIDE_INPUT_LINE_THRESHOLD;
-    tab.showEditorOverride = false;
     renderStructure(parsed.data, tab.search, true, focusNextButton && Boolean(tab.search.trim()));
     setStatus(`Parsed as ${parsed.format}. Expand any box to inspect nested values.`, 'success');
     applyPaneVisibility(tab);
   } catch (error) {
     tab.parsedData = null;
-    tab.hideEditorForLargeFile = false;
-    tab.showEditorOverride = false;
     tab.matches = [];
     tab.activeMatchIndex = -1;
     const message = error instanceof Error ? error.message : String(error);
@@ -1040,8 +1034,6 @@ function loadOpenedFile(payload) {
   tab.matches = [];
   tab.activeMatchIndex = -1;
   tab.expandedPaths = new Set();
-  tab.hideEditorForLargeFile = false;
-  tab.showEditorOverride = false;
   tab.sourceFilePath = typeof payload.filePath === 'string' && payload.filePath ? payload.filePath : null;
   tab.sourceFileName = typeof payload.fileName === 'string' && payload.fileName ? payload.fileName : null;
   tab.savedInputSnapshot = tab.input;
@@ -1401,8 +1393,6 @@ inputBox.addEventListener('input', () => {
   tab.input = inputBox.value;
   refreshDirtyState(tab);
   updateSaveButton(tab);
-  tab.hideEditorForLargeFile = false;
-  tab.showEditorOverride = false;
   applyPaneVisibility(tab);
   syncHighlight();
 
@@ -1467,8 +1457,6 @@ if (clearTextButton) {
     tab.matches = [];
     tab.activeMatchIndex = -1;
     tab.expandedPaths = new Set();
-    tab.hideEditorForLargeFile = false;
-    tab.showEditorOverride = false;
     refreshDirtyState(tab);
 
     inputBox.value = '';
@@ -1491,9 +1479,20 @@ if (showTextPaneButton) {
     if (!tab) {
       return;
     }
-    tab.showEditorOverride = true;
+    tab.hideEditorForLargeFile = false;
     applyPaneVisibility(tab);
     inputBox.focus();
+  });
+}
+
+if (hideTextPaneButton) {
+  hideTextPaneButton.addEventListener('click', () => {
+    const tab = currentTab();
+    if (!tab) {
+      return;
+    }
+    tab.hideEditorForLargeFile = true;
+    applyPaneVisibility(tab);
   });
 }
 
