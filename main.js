@@ -56,6 +56,31 @@ function parseInputInWorker(text) {
   });
 }
 
+function searchStructureInWorker(source, query, limit = 2000) {
+  return new Promise((resolve, reject) => {
+    const workerPath = path.join(__dirname, 'search-worker.js');
+    const worker = new Worker(workerPath, {
+      workerData: {
+        source: String(source || ''),
+        query: String(query || ''),
+        limit: Number(limit) || 2000
+      }
+    });
+
+    worker.once('message', (result) => {
+      resolve(result);
+    });
+    worker.once('error', (error) => {
+      reject(error);
+    });
+    worker.once('exit', (code) => {
+      if (code !== 0) {
+        reject(new Error(`Search worker exited with code ${code}`));
+      }
+    });
+  });
+}
+
 function createAppMenu(getFocusedWindow) {
   const template = [
     ...(process.platform === 'darwin'
@@ -237,6 +262,18 @@ app.whenReady().then(() => {
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       return { ok: false, error: `Parser worker failed: ${message}` };
+    }
+  });
+
+  ipcMain.handle('search-structure-async', async (_event, payload) => {
+    try {
+      const source = payload && typeof payload.source === 'string' ? payload.source : '';
+      const query = payload && typeof payload.query === 'string' ? payload.query : '';
+      const limit = payload && typeof payload.limit === 'number' ? payload.limit : 2000;
+      return await searchStructureInWorker(source, query, limit);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      return { ok: false, error: `Search worker failed: ${message}` };
     }
   });
 

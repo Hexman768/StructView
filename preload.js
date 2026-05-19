@@ -62,6 +62,7 @@ function stringifyYaml(value) {
 contextBridge.exposeInMainWorld('structViewApi', {
   parseInput,
   parseInputAsync: (text) => ipcRenderer.invoke('parse-input-async', text || ''),
+  searchStructureAsync: (payload) => ipcRenderer.invoke('search-structure-async', payload || {}),
   getSettings,
   stringifyYaml,
   onOpenFile: (handler) => {

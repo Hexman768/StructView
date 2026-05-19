@@ -28,6 +28,8 @@ let activeTabId = null;
 let dragState = null;
 let renderedLineNumberCount = -1;
 let parseRequestId = 0;
+let searchRequestId = 0;
+let searchDebounce;
 
 function loadAppSettings() {
   const defaults = {
@@ -68,6 +70,8 @@ function makeTabState(initialInput = '') {
     parsedFormat: 'JSON',
     parseFallback: false,
     expandedPaths: new Set(),
+    asyncSearchMode: false,
+    asyncSearchResults: [],
     sourceFilePath: null,
     sourceFileName: null,
     savedInputSnapshot: initialInput,
@@ -852,9 +856,19 @@ function openDetailsPathForMatch(matchEl) {
   }
 }
 
+function getMatchCount(tab) {
+  if (!tab) {
+    return 0;
+  }
+  if (tab.asyncSearchMode) {
+    return Array.isArray(tab.asyncSearchResults) ? tab.asyncSearchResults.length : 0;
+  }
+  return Array.isArray(tab.matches) ? tab.matches.length : 0;
+}
+
 function updateMatchButtons() {
   const tab = currentTab();
-  const enabled = Boolean(tab && tab.matches.length > 0);
+  const enabled = getMatchCount(tab) > 0;
 
   if (searchPrevButton) {
     searchPrevButton.disabled = !enabled;
@@ -864,34 +878,72 @@ function updateMatchButtons() {
   }
 }
 
+function focusPathMatch(match, scroll = true) {
+  const path = Array.isArray(match) ? match : match && Array.isArray(match.path) ? match.path : null;
+  if (!Array.isArray(path)) {
+    return null;
+  }
+  const targetType = match && typeof match === 'object' && match.target === 'value' ? 'value' : 'key';
+
+  for (let i = 0; i < path.length; i += 1) {
+    const prefix = path.slice(0, i + 1);
+    const token = encodePath(prefix);
+    const selector = `details[data-node-path='${CSS.escape(token)}']`;
+    const details = treeRoot.querySelector(selector);
+    if (details) {
+      details.open = true;
+    }
+  }
+
+  const pathToken = encodePath(path);
+  const nodeSelector = `[data-node-path='${CSS.escape(pathToken)}']`;
+  const nodeEl = treeRoot.querySelector(nodeSelector);
+  if (!nodeEl) {
+    return null;
+  }
+
+  let target = nodeEl.querySelector('.node-key') || nodeEl;
+  if (targetType === 'value') {
+    target = nodeEl.querySelector('.primitive-value') || nodeEl.querySelector('.node-meta') || target;
+  }
+  target.classList.add('active-match');
+  if (scroll) {
+    target.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  }
+  return target;
+}
+
 function setActiveMatch(index, query, scroll = true) {
   const tab = currentTab();
   if (!tab || !searchStatus) {
     return;
   }
 
-  if (tab.matches.length === 0) {
+  const totalMatches = getMatchCount(tab);
+  if (totalMatches === 0) {
     tab.activeMatchIndex = -1;
     searchStatus.textContent = `No matches for "${query}".`;
     updateMatchButtons();
     return;
   }
 
-  const normalizedIndex = ((index % tab.matches.length) + tab.matches.length) % tab.matches.length;
+  const normalizedIndex = ((index % totalMatches) + totalMatches) % totalMatches;
   tab.activeMatchIndex = normalizedIndex;
 
   clearActiveMatch();
-  const matchEl = tab.matches[normalizedIndex];
-  matchEl.classList.add('active-match');
-  openDetailsPathForMatch(matchEl);
-
-  if (scroll) {
-    matchEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  if (tab.asyncSearchMode) {
+    const match = tab.asyncSearchResults[normalizedIndex];
+    focusPathMatch(match, scroll);
+  } else {
+    const matchEl = tab.matches[normalizedIndex];
+    matchEl.classList.add('active-match');
+    openDetailsPathForMatch(matchEl);
+    if (scroll) {
+      matchEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }
   }
 
-  searchStatus.textContent = `${tab.activeMatchIndex + 1} / ${tab.matches.length} match${
-    tab.matches.length === 1 ? '' : 'es'
-  } for "${query}".`;
+  searchStatus.textContent = `${tab.activeMatchIndex + 1} / ${totalMatches} match${totalMatches === 1 ? '' : 'es'} for "${query}".`;
   updateMatchButtons();
 }
 
@@ -909,6 +961,8 @@ function renderStructure(data, query = '', jumpToMatch = false, focusNextButton 
   const rootNode = createTreeNode('root', data, 0, normalizedQuery, matches, []);
   treeRoot.appendChild(rootNode);
 
+  tab.asyncSearchMode = false;
+  tab.asyncSearchResults = [];
   tab.matches = matches;
 
   if (!normalizedQuery) {
@@ -960,6 +1014,82 @@ async function parseSource(source) {
   }
 }
 
+function shouldUseAsyncSearch(tab) {
+  return Boolean(tab && tab.parsedData !== null && isLargeInputText(tab.input));
+}
+
+async function runAsyncSearch(query, focusNextButton = false) {
+  const tab = currentTab();
+  if (!tab || tab.parsedData === null || !searchStatus) {
+    return;
+  }
+
+  const trimmed = query.trim();
+  if (!trimmed) {
+    tab.asyncSearchMode = false;
+    tab.asyncSearchResults = [];
+    renderStructure(tab.parsedData, '', false, false);
+    return;
+  }
+
+  const requestId = ++searchRequestId;
+  searchStatus.textContent = `Searching "${trimmed}"...`;
+  updateMatchButtons();
+
+  const api = window.structViewApi;
+  if (!api || typeof api.searchStructureAsync !== 'function') {
+    renderStructure(tab.parsedData, query, true, focusNextButton);
+    return;
+  }
+
+  const result = await api.searchStructureAsync({
+    source: tab.input,
+    query: trimmed,
+    limit: 2000
+  });
+
+  if (requestId !== searchRequestId || tab !== currentTab()) {
+    return;
+  }
+
+  if (!result || !result.ok) {
+    const message = result && result.error ? result.error : 'Search failed.';
+    searchStatus.textContent = message;
+    tab.asyncSearchMode = false;
+    tab.asyncSearchResults = [];
+    updateMatchButtons();
+    return;
+  }
+
+  tab.asyncSearchMode = true;
+  tab.asyncSearchResults = Array.isArray(result.results)
+    ? result.results
+    : Array.isArray(result.paths)
+      ? result.paths.map((path) => ({ path, target: 'key' }))
+      : [];
+  tab.matches = [];
+  tab.activeMatchIndex = -1;
+
+  renderStructure(tab.parsedData, '', false, false);
+  tab.asyncSearchMode = true;
+  tab.asyncSearchResults = Array.isArray(result.results)
+    ? result.results
+    : Array.isArray(result.paths)
+      ? result.paths.map((path) => ({ path, target: 'key' }))
+      : [];
+
+  if (tab.asyncSearchResults.length === 0) {
+    searchStatus.textContent = `No matches for "${trimmed}".`;
+    updateMatchButtons();
+    return;
+  }
+
+  setActiveMatch(0, trimmed, true);
+  if (focusNextButton && searchNextButton && !searchNextButton.disabled) {
+    searchNextButton.focus();
+  }
+}
+
 async function parseAndRender(focusNextButton = false) {
   const tab = currentTab();
   if (!tab) {
@@ -986,6 +1116,8 @@ async function parseAndRender(focusNextButton = false) {
     if (!parsed.ok) {
       tab.parsedData = null;
       tab.matches = [];
+      tab.asyncSearchMode = false;
+      tab.asyncSearchResults = [];
       tab.activeMatchIndex = -1;
       setStatus(parsed.error, 'error');
       treeRoot.innerHTML = '<p class="node-meta">Structure will appear here after successful parsing.</p>';
@@ -1000,12 +1132,21 @@ async function parseAndRender(focusNextButton = false) {
     tab.parsedData = parsed.data;
     tab.parsedFormat = parsed.format;
     tab.parseFallback = Boolean(parsed.fallback);
+    if (tab.search.trim() && shouldUseAsyncSearch(tab)) {
+      renderStructure(parsed.data, '', false, false);
+      await runAsyncSearch(tab.search, focusNextButton && Boolean(tab.search.trim()));
+      setStatus(`Parsed as ${parsed.format}. Expand any box to inspect nested values.`, 'success');
+      applyPaneVisibility(tab);
+      return;
+    }
     renderStructure(parsed.data, tab.search, true, focusNextButton && Boolean(tab.search.trim()));
     setStatus(`Parsed as ${parsed.format}. Expand any box to inspect nested values.`, 'success');
     applyPaneVisibility(tab);
   } catch (error) {
     tab.parsedData = null;
     tab.matches = [];
+    tab.asyncSearchMode = false;
+    tab.asyncSearchResults = [];
     tab.activeMatchIndex = -1;
     const message = error instanceof Error ? error.message : String(error);
     setStatus(`Render failed: ${message}`, 'error');
@@ -1032,6 +1173,8 @@ function loadOpenedFile(payload) {
   tab.input = payload.content;
   tab.search = '';
   tab.matches = [];
+  tab.asyncSearchMode = false;
+  tab.asyncSearchResults = [];
   tab.activeMatchIndex = -1;
   tab.expandedPaths = new Set();
   tab.sourceFilePath = typeof payload.filePath === 'string' && payload.filePath ? payload.filePath : null;
@@ -1155,9 +1298,14 @@ function hydrateActiveTab() {
   refreshStatusFromTab();
 
   if (tab.parsedData !== null) {
-    renderStructure(tab.parsedData, tab.search, false, false);
-    if (tab.search.trim() && tab.matches.length > 0) {
-      setActiveMatch(tab.activeMatchIndex >= 0 ? tab.activeMatchIndex : 0, tab.search.trim(), false);
+    if (tab.search.trim() && shouldUseAsyncSearch(tab)) {
+      renderStructure(tab.parsedData, '', false, false);
+      runAsyncSearch(tab.search, false);
+    } else {
+      renderStructure(tab.parsedData, tab.search, false, false);
+      if (tab.search.trim() && tab.matches.length > 0) {
+        setActiveMatch(tab.activeMatchIndex >= 0 ? tab.activeMatchIndex : 0, tab.search.trim(), false);
+      }
     }
   } else {
     treeRoot.innerHTML = '<p class="node-meta">Structure will appear here after successful parsing.</p>';
@@ -1288,7 +1436,7 @@ function handleDragStart(event) {
     return;
   }
 
-  const source = event.target.closest('[data-drag-source-path]');
+  const source = event.target.closest('.node-drag-handle[data-drag-source-path]');
   if (!source) {
     return;
   }
@@ -1391,6 +1539,8 @@ inputBox.addEventListener('input', () => {
   }
 
   tab.input = inputBox.value;
+  tab.asyncSearchMode = false;
+  tab.asyncSearchResults = [];
   refreshDirtyState(tab);
   updateSaveButton(tab);
   applyPaneVisibility(tab);
@@ -1511,7 +1661,14 @@ if (searchInput) {
 
     tab.search = searchInput.value;
     if (tab.parsedData !== null) {
-      renderStructure(tab.parsedData, tab.search, true, false);
+      if (shouldUseAsyncSearch(tab)) {
+        clearTimeout(searchDebounce);
+        searchDebounce = setTimeout(() => {
+          runAsyncSearch(tab.search, false);
+        }, 250);
+      } else {
+        renderStructure(tab.parsedData, tab.search, true, false);
+      }
     }
   });
 
@@ -1520,7 +1677,31 @@ if (searchInput) {
       event.preventDefault();
       const tab = currentTab();
       if (tab && tab.parsedData !== null) {
-        renderStructure(tab.parsedData, tab.search, true, true);
+        if (shouldUseAsyncSearch(tab)) {
+          const trimmed = tab.search.trim();
+          const existing = getMatchCount(tab);
+          if (trimmed && existing > 0) {
+            const nextIndex = tab.activeMatchIndex >= 0 ? tab.activeMatchIndex + 1 : 0;
+            setActiveMatch(nextIndex, trimmed, true);
+            if (searchNextButton && !searchNextButton.disabled) {
+              searchNextButton.focus();
+            }
+            return;
+          }
+          clearTimeout(searchDebounce);
+          runAsyncSearch(tab.search, true);
+        } else {
+          const trimmed = tab.search.trim();
+          if (trimmed && tab.matches.length > 0) {
+            const nextIndex = tab.activeMatchIndex >= 0 ? tab.activeMatchIndex + 1 : 0;
+            setActiveMatch(nextIndex, trimmed, true);
+            if (searchNextButton && !searchNextButton.disabled) {
+              searchNextButton.focus();
+            }
+          } else {
+            renderStructure(tab.parsedData, tab.search, true, true);
+          }
+        }
       }
     }
   });
@@ -1535,6 +1716,8 @@ if (searchClearButton) {
 
     tab.search = '';
     searchInput.value = '';
+    tab.asyncSearchMode = false;
+    tab.asyncSearchResults = [];
 
     if (tab.parsedData !== null) {
       renderStructure(tab.parsedData, '', false, false);
@@ -1547,7 +1730,7 @@ if (searchClearButton) {
 if (searchPrevButton) {
   searchPrevButton.addEventListener('click', () => {
     const tab = currentTab();
-    if (tab && tab.matches.length > 0) {
+    if (tab && getMatchCount(tab) > 0) {
       setActiveMatch(tab.activeMatchIndex - 1, tab.search.trim(), true);
     }
   });
@@ -1556,7 +1739,7 @@ if (searchPrevButton) {
 if (searchNextButton) {
   searchNextButton.addEventListener('click', () => {
     const tab = currentTab();
-    if (tab && tab.matches.length > 0) {
+    if (tab && getMatchCount(tab) > 0) {
       setActiveMatch(tab.activeMatchIndex + 1, tab.search.trim(), true);
     }
   });
