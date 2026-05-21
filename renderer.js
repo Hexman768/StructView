@@ -11,6 +11,7 @@ const searchPrevButton = document.getElementById('tree-search-prev');
 const searchNextButton = document.getElementById('tree-search-next');
 const searchClearButton = document.getElementById('tree-search-clear');
 const searchStatus = document.getElementById('search-status');
+const nodeBreadcrumb = document.getElementById('node-breadcrumb');
 const renderBtn = document.getElementById('render-btn') || document.getElementById('generate-btn');
 const openFileButton = document.getElementById('open-file-btn');
 const hideTextPaneButton = document.getElementById('hide-text-pane-btn');
@@ -76,7 +77,8 @@ function makeTabState(initialInput = '') {
     sourceFileName: null,
     savedInputSnapshot: initialInput,
     dirty: false,
-    hideEditorForLargeFile: false
+    hideEditorForLargeFile: false,
+    interactionPath: null
   };
 }
 
@@ -111,9 +113,213 @@ function shouldHideEditor(tab) {
 function applyPaneVisibility(tab = currentTab()) {
   const hideEditor = shouldHideEditor(tab);
   bodyEl.classList.toggle('structure-only-mode', hideEditor);
+  if (hideTextPaneButton) {
+    hideTextPaneButton.hidden = hideEditor;
+  }
   if (showTextPaneButton) {
     showTextPaneButton.hidden = !hideEditor;
   }
+}
+
+function formatPathSegment(segment) {
+  if (typeof segment === 'number') {
+    return `[${segment}]`;
+  }
+  return String(segment);
+}
+
+function clearBreadcrumbTarget() {
+  treeRoot.querySelectorAll('.breadcrumb-target').forEach((el) => {
+    el.classList.remove('breadcrumb-target');
+  });
+}
+
+function focusStructurePath(path, scroll = true) {
+  if (!Array.isArray(path)) {
+    return null;
+  }
+
+  for (let i = 0; i < path.length; i += 1) {
+    const token = encodePath(path.slice(0, i + 1));
+    const details = treeRoot.querySelector(`details[data-node-path='${CSS.escape(token)}']`);
+    if (details) {
+      details.open = true;
+    }
+  }
+
+  const token = encodePath(path);
+  const nodeEl = treeRoot.querySelector(`[data-node-path='${CSS.escape(token)}']`);
+  if (!nodeEl) {
+    return null;
+  }
+
+  const target =
+    nodeEl.querySelector('.node-key') ||
+    nodeEl.querySelector('.primitive-value') ||
+    nodeEl.querySelector('.node-meta') ||
+    nodeEl;
+  clearBreadcrumbTarget();
+  target.classList.add('breadcrumb-target');
+  if (scroll) {
+    target.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  }
+  return target;
+}
+
+function escapeRegExp(text) {
+  return String(text).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function findBestTextIndexForPath(tab, path) {
+  if (!tab || typeof tab.input !== 'string') {
+    return 0;
+  }
+  if (!Array.isArray(path) || path.length === 0) {
+    return 0;
+  }
+
+  const source = tab.input;
+  const keyTrail = path.filter((segment) => typeof segment === 'string');
+  if (keyTrail.length === 0) {
+    return 0;
+  }
+
+  const targetKey = keyTrail[keyTrail.length - 1];
+  const ancestorKeys = keyTrail.slice(0, -1);
+  const jsonPattern = new RegExp(`"${escapeRegExp(targetKey)}"\\s*:`, 'g');
+  const yamlPattern = new RegExp(`(?:^|\\n)\\s*${escapeRegExp(targetKey)}\\s*:`, 'g');
+  const candidates = [];
+
+  let match;
+  while ((match = jsonPattern.exec(source)) !== null) {
+    candidates.push(match.index);
+  }
+  while ((match = yamlPattern.exec(source)) !== null) {
+    candidates.push(match.index + (match[0].startsWith('\n') ? 1 : 0));
+  }
+
+  if (candidates.length === 0) {
+    const fallback = source.toLowerCase().indexOf(String(targetKey).toLowerCase());
+    return fallback >= 0 ? fallback : 0;
+  }
+
+  let bestIndex = candidates[0];
+  let bestScore = -1;
+  for (const candidate of candidates) {
+    const beforeText = source.slice(0, candidate).toLowerCase();
+    let score = 0;
+    let cursor = beforeText.length;
+    for (let i = ancestorKeys.length - 1; i >= 0; i -= 1) {
+      const ancestor = String(ancestorKeys[i]).toLowerCase();
+      const found = beforeText.lastIndexOf(ancestor, cursor - 1);
+      if (found === -1) {
+        continue;
+      }
+      score += 1;
+      cursor = found;
+    }
+    if (score > bestScore || (score === bestScore && candidate > bestIndex)) {
+      bestScore = score;
+      bestIndex = candidate;
+    }
+  }
+
+  return bestIndex;
+}
+
+function jumpTextPaneToPath(path) {
+  const tab = currentTab();
+  if (!tab || typeof tab.input !== 'string') {
+    return;
+  }
+
+  const index = findBestTextIndexForPath(tab, path);
+  const safeIndex = Math.max(0, Math.min(index, tab.input.length));
+  inputBox.focus();
+  inputBox.setSelectionRange(safeIndex, safeIndex);
+  inputBox.dispatchEvent(new Event('scroll'));
+}
+
+function jumpToPath(path) {
+  if (!Array.isArray(path)) {
+    return;
+  }
+  setInteractionPath(path);
+  focusStructurePath(path, true);
+  jumpTextPaneToPath(path);
+}
+
+function renderInteractionBreadcrumb(tab = currentTab()) {
+  if (!nodeBreadcrumb) {
+    return;
+  }
+
+  nodeBreadcrumb.innerHTML = '';
+  const path = tab && Array.isArray(tab.interactionPath) ? tab.interactionPath : null;
+  if (!path) {
+    const empty = document.createElement('span');
+    empty.className = 'breadcrumb-empty';
+    empty.textContent = 'No node selected.';
+    nodeBreadcrumb.appendChild(empty);
+    return;
+  }
+
+  const fragment = document.createDocumentFragment();
+  const rootItem = document.createElement('button');
+  rootItem.type = 'button';
+  rootItem.className = 'breadcrumb-item';
+  rootItem.textContent = 'root';
+  rootItem.dataset.breadcrumbPath = encodePath([]);
+  if (path.length === 0) {
+    rootItem.classList.add('active');
+    rootItem.setAttribute('aria-current', 'location');
+  }
+  fragment.appendChild(rootItem);
+
+  path.forEach((segment, index) => {
+    const separator = document.createElement('span');
+    separator.className = 'breadcrumb-separator';
+    separator.textContent = '/';
+    fragment.appendChild(separator);
+
+    const item = document.createElement('button');
+    item.type = 'button';
+    item.className = 'breadcrumb-item';
+    item.textContent = formatPathSegment(segment);
+    const segmentPath = path.slice(0, index + 1);
+    item.dataset.breadcrumbPath = encodePath(segmentPath);
+    if (index === path.length - 1) {
+      item.classList.add('active');
+      item.setAttribute('aria-current', 'location');
+    }
+    fragment.appendChild(item);
+  });
+
+  nodeBreadcrumb.appendChild(fragment);
+}
+
+function setInteractionPath(path) {
+  const tab = currentTab();
+  if (!tab) {
+    return;
+  }
+  tab.interactionPath = Array.isArray(path) ? [...path] : null;
+  renderInteractionBreadcrumb(tab);
+}
+
+function updateInteractionPathFromTarget(target) {
+  if (!(target instanceof Element)) {
+    return;
+  }
+  const nodeHost = target.closest('[data-node-path]');
+  if (!nodeHost || typeof nodeHost.dataset.nodePath !== 'string') {
+    return;
+  }
+  const path = decodePath(nodeHost.dataset.nodePath);
+  if (!path) {
+    return;
+  }
+  setInteractionPath(path);
 }
 
 function refreshDirtyState(tab) {
@@ -670,6 +876,7 @@ function createPrimitiveNode(label, value, query, matches, path, indexMeta = '')
       const nextPath = renamePathKeyIfNeeded(path, keyInput.value);
       const parsedValue = parseEditableValue(valueInput.value, value);
       tab.parsedData = setNodeAtPath(tab.parsedData, nextPath, parsedValue);
+      setInteractionPath(nextPath);
       applyStructureChange('Updated element from Structure View.');
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -790,7 +997,8 @@ function createBranchNode(label, value, depth, query, matches, path, indexMeta =
       if (!tab || tab.parsedData === null) {
         return;
       }
-      renamePathKeyIfNeeded(path, branchKeyInput.value);
+      const nextPath = renamePathKeyIfNeeded(path, branchKeyInput.value);
+      setInteractionPath(nextPath);
       applyStructureChange('Renamed element from Structure View.');
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -910,6 +1118,7 @@ function focusPathMatch(match, scroll = true) {
   if (scroll) {
     target.scrollIntoView({ behavior: 'smooth', block: 'center' });
   }
+  setInteractionPath(path);
   return target;
 }
 
@@ -938,6 +1147,7 @@ function setActiveMatch(index, query, scroll = true) {
     const matchEl = tab.matches[normalizedIndex];
     matchEl.classList.add('active-match');
     openDetailsPathForMatch(matchEl);
+    updateInteractionPathFromTarget(matchEl);
     if (scroll) {
       matchEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
     }
@@ -951,6 +1161,13 @@ function renderStructure(data, query = '', jumpToMatch = false, focusNextButton 
   const tab = currentTab();
   if (!tab) {
     return;
+  }
+
+  if (Array.isArray(tab.interactionPath) && tab.interactionPath.length > 0) {
+    const activeNode = getNodeAtPath(data, tab.interactionPath);
+    if (activeNode === undefined) {
+      tab.interactionPath = null;
+    }
   }
 
   captureExpandedPaths();
@@ -972,6 +1189,7 @@ function renderStructure(data, query = '', jumpToMatch = false, focusNextButton 
       searchStatus.textContent = 'Showing full structure.';
     }
     updateMatchButtons();
+    renderInteractionBreadcrumb(tab);
     return;
   }
 
@@ -984,6 +1202,7 @@ function renderStructure(data, query = '', jumpToMatch = false, focusNextButton 
     searchStatus.textContent = `${matches.length} match${matches.length === 1 ? '' : 'es'} for "${query.trim()}".`;
     updateMatchButtons();
   }
+  renderInteractionBreadcrumb(tab);
 }
 
 async function parseSource(source) {
@@ -1125,6 +1344,8 @@ async function parseAndRender(focusNextButton = false) {
         searchStatus.textContent = 'Showing full structure.';
       }
       updateMatchButtons();
+      tab.interactionPath = null;
+      renderInteractionBreadcrumb(tab);
       applyPaneVisibility(tab);
       return;
     }
@@ -1155,6 +1376,8 @@ async function parseAndRender(focusNextButton = false) {
       searchStatus.textContent = 'Showing full structure.';
     }
     updateMatchButtons();
+    tab.interactionPath = null;
+    renderInteractionBreadcrumb(tab);
     applyPaneVisibility(tab);
     console.error('StructView render error:', error);
   }
@@ -1177,6 +1400,7 @@ function loadOpenedFile(payload) {
   tab.asyncSearchResults = [];
   tab.activeMatchIndex = -1;
   tab.expandedPaths = new Set();
+  tab.interactionPath = null;
   tab.sourceFilePath = typeof payload.filePath === 'string' && payload.filePath ? payload.filePath : null;
   tab.sourceFileName = typeof payload.fileName === 'string' && payload.fileName ? payload.fileName : null;
   tab.savedInputSnapshot = tab.input;
@@ -1194,6 +1418,7 @@ function loadOpenedFile(payload) {
   syncHighlight();
   applyPaneVisibility(tab);
   updateSaveButton(tab);
+  renderInteractionBreadcrumb(tab);
   parseAndRender(false);
 }
 
@@ -1296,6 +1521,7 @@ function hydrateActiveTab() {
 
   syncHighlight();
   refreshStatusFromTab();
+  renderInteractionBreadcrumb(tab);
 
   if (tab.parsedData !== null) {
     if (tab.search.trim() && shouldUseAsyncSearch(tab)) {
@@ -1449,6 +1675,7 @@ function handleDragStart(event) {
   dragState = {
     sourcePath
   };
+  setInteractionPath(sourcePath);
 
   source.classList.add('node-dragging');
   if (event.dataTransfer) {
@@ -1504,9 +1731,16 @@ function handleDrop(event) {
   }
 
   applyMove(dragState.sourcePath, targetPath);
+  setInteractionPath(targetPath);
 }
 
 treeRoot.addEventListener('click', handleEditClick);
+treeRoot.addEventListener('click', (event) => {
+  updateInteractionPathFromTarget(event.target);
+});
+treeRoot.addEventListener('focusin', (event) => {
+  updateInteractionPathFromTarget(event.target);
+});
 treeRoot.addEventListener('dragstart', handleDragStart);
 treeRoot.addEventListener('dragend', handleDragEnd);
 treeRoot.addEventListener('dragover', handleDragOver);
@@ -1531,6 +1765,20 @@ treeRoot.addEventListener(
   },
   true
 );
+
+if (nodeBreadcrumb) {
+  nodeBreadcrumb.addEventListener('click', (event) => {
+    const target = event.target.closest('.breadcrumb-item[data-breadcrumb-path]');
+    if (!target) {
+      return;
+    }
+    const path = decodePath(target.dataset.breadcrumbPath || '');
+    if (!path) {
+      return;
+    }
+    jumpToPath(path);
+  });
+}
 
 inputBox.addEventListener('input', () => {
   const tab = currentTab();
@@ -1607,6 +1855,7 @@ if (clearTextButton) {
     tab.matches = [];
     tab.activeMatchIndex = -1;
     tab.expandedPaths = new Set();
+    tab.interactionPath = null;
     refreshDirtyState(tab);
 
     inputBox.value = '';
@@ -1618,6 +1867,7 @@ if (clearTextButton) {
       searchStatus.textContent = tab.search.trim() ? `No matches for "${tab.search.trim()}".` : 'Showing full structure.';
     }
     updateMatchButtons();
+    renderInteractionBreadcrumb(tab);
     setStatus('Cleared all input text.', 'success');
     inputBox.focus();
   });

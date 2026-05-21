@@ -57,6 +57,69 @@ body {
   background: linear-gradient(180deg, rgba(14, 31, 48, 0.92), rgba(9, 20, 33, 0.92));
 }
 
+.breadcrumb-shell {
+  margin: 0.35rem 1.5rem 0;
+  padding: 0.5rem 0.75rem;
+  border: 1px solid #274869;
+  border-radius: 12px;
+  background: linear-gradient(180deg, rgba(11, 25, 39, 0.9), rgba(6, 15, 26, 0.9));
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  min-height: 2.5rem;
+}
+
+.breadcrumb-label {
+  font-size: 0.72rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+  flex: 0 0 auto;
+}
+
+.node-breadcrumb {
+  display: flex;
+  align-items: center;
+  gap: 0.38rem;
+  min-width: 0;
+  overflow-x: auto;
+  white-space: nowrap;
+  color: #d9ecff;
+}
+
+.breadcrumb-item {
+  border: 1px solid #2f597d;
+  border-radius: 999px;
+  padding: 0.14rem 0.52rem;
+  background: rgba(19, 51, 76, 0.8);
+  font-size: 0.78rem;
+  color: #d9ecff;
+  cursor: pointer;
+}
+
+button.breadcrumb-item {
+  font: inherit;
+}
+
+.breadcrumb-item:hover {
+  filter: brightness(1.12);
+}
+
+.breadcrumb-item.active {
+  border-color: #65b9ff;
+  background: rgba(35, 90, 129, 0.9);
+}
+
+.breadcrumb-separator {
+  color: #86b2d3;
+  font-weight: 700;
+}
+
+.breadcrumb-empty {
+  color: var(--muted);
+  font-size: 0.84rem;
+}
+
 .toolbar-actions {
   display: flex;
   align-items: center;
@@ -116,7 +179,7 @@ body {
   grid-template-columns: minmax(340px, 45%) 1fr;
   gap: 1rem;
   padding: 0.75rem 1.5rem 1.5rem;
-  height: calc(100vh - 170px);
+  height: calc(100vh - 220px);
 }
 
 body.structure-only-mode .layout {
@@ -361,6 +424,13 @@ body.structure-only-mode .editor-panel {
   border-radius: 4px;
 }
 
+.breadcrumb-target {
+  color: #ffe28f;
+  text-shadow: 0 0 8px rgba(255, 226, 143, 0.3);
+  background: rgba(255, 226, 143, 0.22);
+  border-radius: 4px;
+}
+
 .node-type {
   color: #d1e6f8;
   background: #1f3e5a;
@@ -540,6 +610,13 @@ body.structure-only-mode .editor-panel {
 @media (max-width: 980px) {
   .app-toolbar {
     margin: 0.35rem 0.9rem 0;
+  }
+
+  .breadcrumb-shell {
+    margin: 0.35rem 0.9rem 0;
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 0.35rem;
   }
 
   .layout {
