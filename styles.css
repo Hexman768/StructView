@@ -243,6 +243,11 @@ body.structure-only-mode .editor-panel {
   filter: brightness(1.08);
 }
 
+.pane-action-btn {
+  padding: 0.35rem 0.65rem;
+  font-size: 0.78rem;
+}
+
 .editor-wrap {
   position: relative;
   margin: 0.9rem;

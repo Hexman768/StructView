@@ -18,6 +18,7 @@ const hideTextPaneButton = document.getElementById('hide-text-pane-btn');
 const saveFileButton = document.getElementById('save-file-btn');
 const clearTextButton = document.getElementById('clear-text-btn');
 const showTextPaneButton = document.getElementById('show-text-pane-btn');
+const beautifyButton = document.getElementById('beautify-btn');
 const bodyEl = document.body;
 const LARGE_FILE_HIDE_INPUT_LINE_THRESHOLD = 10000;
 const LARGE_EDIT_CHAR_THRESHOLD = 200000;
@@ -119,6 +120,31 @@ function applyPaneVisibility(tab = currentTab()) {
   if (showTextPaneButton) {
     showTextPaneButton.hidden = !hideEditor;
   }
+  updateBeautifyVisibility(tab);
+}
+
+function hasYamlFileExtension(fileName) {
+  if (typeof fileName !== 'string') {
+    return false;
+  }
+  return /\.ya?ml$/i.test(fileName.trim());
+}
+
+function isYamlTab(tab) {
+  if (!tab) {
+    return false;
+  }
+  if (tab.parsedFormat === 'YAML') {
+    return true;
+  }
+  return hasYamlFileExtension(tab.sourceFileName || '');
+}
+
+function updateBeautifyVisibility(tab = currentTab()) {
+  if (!beautifyButton) {
+    return;
+  }
+  beautifyButton.hidden = isYamlTab(tab);
 }
 
 function formatPathSegment(segment) {
@@ -393,6 +419,42 @@ async function saveCurrentTab() {
     const message = error instanceof Error ? error.message : String(error);
     setStatus(`Save failed: ${message}`, 'error');
   }
+}
+
+function beautifyCurrentTab() {
+  const tab = currentTab();
+  if (!tab) {
+    return;
+  }
+
+  const raw = tab.input;
+  if (!raw || !raw.trim()) {
+    setStatus('Nothing to beautify. Paste JSON first.', 'error');
+    return;
+  }
+
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (error) {
+    setStatus('Beautify supports JSON only. Input is not valid JSON.', 'error');
+    return;
+  }
+
+  const beautified = JSON.stringify(parsed, null, 4);
+  tab.input = beautified;
+  tab.parsedData = parsed;
+  tab.parsedFormat = 'JSON';
+  tab.parseFallback = false;
+
+  refreshDirtyState(tab);
+  updateSaveButton(tab);
+  inputBox.value = beautified;
+  syncHighlight();
+  applyPaneVisibility(tab);
+  updateBeautifyVisibility(tab);
+  setStatus('Beautified JSON with 4-space indentation.', 'success');
+  parseAndRender(true);
 }
 
 function setStatus(message, type = 'neutral') {
@@ -1417,6 +1479,7 @@ function loadOpenedFile(payload) {
   }
   syncHighlight();
   applyPaneVisibility(tab);
+  updateBeautifyVisibility(tab);
   updateSaveButton(tab);
   renderInteractionBreadcrumb(tab);
   parseAndRender(false);
@@ -1521,6 +1584,7 @@ function hydrateActiveTab() {
 
   syncHighlight();
   refreshStatusFromTab();
+  updateBeautifyVisibility(tab);
   renderInteractionBreadcrumb(tab);
 
   if (tab.parsedData !== null) {
@@ -1899,6 +1963,12 @@ if (hideTextPaneButton) {
 if (saveFileButton) {
   saveFileButton.addEventListener('click', () => {
     saveCurrentTab();
+  });
+}
+
+if (beautifyButton) {
+  beautifyButton.addEventListener('click', () => {
+    beautifyCurrentTab();
   });
 }
 
