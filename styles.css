@@ -281,6 +281,57 @@ body.structure-only-mode .editor-panel {
   color: #6f8ea6;
   pointer-events: none;
   overflow: hidden;
+  z-index: 1;
+}
+
+.jump-button-layer {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: var(--line-gutter-width);
+  margin: 0;
+  border: none;
+  padding: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  scrollbar-width: none;
+  pointer-events: none;
+  z-index: 4;
+}
+
+.text-hover-underline {
+  position: absolute;
+  height: 1px;
+  background: #8fd3ff;
+  border-radius: 1px;
+  pointer-events: none;
+  z-index: 5;
+}
+
+.jump-button-layer::-webkit-scrollbar {
+  display: none;
+}
+
+.text-jump-btn {
+  position: absolute;
+  right: 0.08rem;
+  width: 1.08rem;
+  height: 1.08rem;
+  border: 1px solid #59a8d8;
+  border-radius: 6px;
+  background: linear-gradient(180deg, #1f4f73, #123049);
+  color: #d9f1ff;
+  font: 800 0.68rem/1 "JetBrains Mono", "Fira Code", "SFMono-Regular", Menlo, Consolas, monospace;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  box-shadow: 0 0 0 1px rgba(6, 20, 31, 0.5);
+  pointer-events: auto;
+}
+
+.text-jump-btn:hover {
+  filter: brightness(1.14);
 }
 
 .highlight-layer {
@@ -289,6 +340,7 @@ body.structure-only-mode .editor-panel {
   pointer-events: none;
   color: #d7e8f9;
   overflow: auto;
+  z-index: 2;
 }
 
 .input-box {
@@ -299,6 +351,7 @@ body.structure-only-mode .editor-panel {
   color: transparent;
   caret-color: #ffffff;
   overflow: auto;
+  z-index: 3;
 }
 
 .editor-wrap.plain-text-mode .highlight-layer {
@@ -590,6 +643,16 @@ body.structure-only-mode .editor-panel {
 
 .token-key {
   color: #65b9ff;
+}
+
+.token-jump-target {
+  cursor: pointer;
+}
+
+.token-hover-target {
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  text-decoration-thickness: 1.5px;
 }
 
 .token-string {

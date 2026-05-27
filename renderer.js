@@ -2,6 +2,8 @@ const tabsBar = document.getElementById('tabs-bar');
 const addTabButton = document.getElementById('add-tab-btn');
 const inputBox = document.getElementById('input-box');
 const lineNumberLayer = document.getElementById('line-number-layer');
+const jumpButtonLayer = document.getElementById('jump-button-layer');
+const textHoverUnderline = document.getElementById('text-hover-underline');
 const highlightLayer = document.getElementById('highlight-layer');
 const editorWrap = document.getElementById('editor-wrap');
 const treeRoot = document.getElementById('tree-root');
@@ -32,6 +34,9 @@ let renderedLineNumberCount = -1;
 let parseRequestId = 0;
 let searchRequestId = 0;
 let searchDebounce;
+let hoveredTextMarkerStart = null;
+let hoveredKeyMarkerEntry = null;
+let inputPointerMetricsCache = null;
 
 function loadAppSettings() {
   const defaults = {
@@ -79,7 +84,9 @@ function makeTabState(initialInput = '') {
     savedInputSnapshot: initialInput,
     dirty: false,
     hideEditorForLargeFile: false,
-    interactionPath: null
+    interactionPath: null,
+    textPathMarkers: [],
+    textKeyLineMap: new Map()
   };
 }
 
@@ -264,6 +271,190 @@ function jumpTextPaneToPath(path) {
   inputBox.focus();
   inputBox.setSelectionRange(safeIndex, safeIndex);
   inputBox.dispatchEvent(new Event('scroll'));
+}
+
+function findMarkerAtOffset(markers, offset, { strict = false, keyOnly = false } = {}) {
+  if (!Array.isArray(markers) || markers.length === 0) {
+    return null;
+  }
+
+  const normalizedOffset = Math.max(0, Number(offset) || 0);
+  for (const marker of markers) {
+    if (keyOnly && marker.type !== 'key') {
+      continue;
+    }
+    if (normalizedOffset >= marker.start && normalizedOffset <= marker.end) {
+      return marker;
+    }
+  }
+  if (strict) {
+    return null;
+  }
+  return markers[0] || null;
+}
+
+function setHoveredTextMarker(markerStart) {
+  if (hoveredTextMarkerStart === markerStart) {
+    return;
+  }
+  const previous = highlightLayer.querySelector('.token-hover-target');
+  if (previous) {
+    previous.classList.remove('token-hover-target');
+  }
+  hoveredTextMarkerStart = markerStart;
+  if (markerStart === null || markerStart === undefined) {
+    return;
+  }
+  const next = highlightLayer.querySelector(`[data-marker-start="${String(markerStart)}"]`);
+  if (next) {
+    next.classList.add('token-hover-target');
+  }
+}
+
+function hideTextHoverUnderline() {
+  if (!textHoverUnderline) {
+    return;
+  }
+  textHoverUnderline.hidden = true;
+}
+
+function refreshTextHoverUnderline() {
+  if (!textHoverUnderline || !hoveredKeyMarkerEntry) {
+    hideTextHoverUnderline();
+    return;
+  }
+
+  const metrics = getInputPointerMetrics();
+  const left = metrics.paddingLeft + hoveredKeyMarkerEntry.startColumn * metrics.charWidth - inputBox.scrollLeft;
+  const width = Math.max(
+    metrics.charWidth,
+    (hoveredKeyMarkerEntry.endColumn - hoveredKeyMarkerEntry.startColumn) * metrics.charWidth
+  );
+  const top = metrics.paddingTop + (hoveredKeyMarkerEntry.lineIndex + 1) * metrics.lineHeight - inputBox.scrollTop - 1;
+
+  textHoverUnderline.style.left = `${left}px`;
+  textHoverUnderline.style.top = `${top}px`;
+  textHoverUnderline.style.width = `${width}px`;
+  textHoverUnderline.hidden = false;
+}
+
+function setHoveredKeyMarkerEntry(entry) {
+  hoveredKeyMarkerEntry = entry || null;
+  refreshTextHoverUnderline();
+}
+
+function updateHoveredTextMarkerFromOffset(offset) {
+  const tab = currentTab();
+  if (!tab || !Array.isArray(tab.textPathMarkers)) {
+    setHoveredTextMarker(null);
+    return;
+  }
+  const marker = findMarkerAtOffset(tab.textPathMarkers, offset, { strict: true, keyOnly: true });
+  setHoveredTextMarker(marker ? marker.start : null);
+  setHoveredKeyMarkerEntry(null);
+}
+
+function getInputPointerMetrics() {
+  const computed = window.getComputedStyle(inputBox);
+  const rect = inputBox.getBoundingClientRect();
+  const font = computed.font || '';
+  if (!inputPointerMetricsCache || inputPointerMetricsCache.font !== font) {
+    const probe = document.createElement('span');
+    probe.style.position = 'absolute';
+    probe.style.visibility = 'hidden';
+    probe.style.font = font;
+    probe.style.whiteSpace = 'pre';
+    probe.textContent = 'M';
+    document.body.appendChild(probe);
+    const charWidth = probe.getBoundingClientRect().width || 8;
+    probe.remove();
+
+    inputPointerMetricsCache = {
+      font,
+      charWidth
+    };
+  }
+
+  const paddingTop = Number.parseFloat(computed.paddingTop) || 0;
+  const paddingLeft = Number.parseFloat(computed.paddingLeft) || 0;
+  const lineHeight = Number.parseFloat(computed.lineHeight) || 20;
+
+  return {
+    rect,
+    paddingTop,
+    paddingLeft,
+    lineHeight,
+    charWidth: inputPointerMetricsCache.charWidth
+  };
+}
+
+function findKeyMarkerFromPointerEvent(event) {
+  const tab = currentTab();
+  if (!tab || !(tab.textKeyLineMap instanceof Map) || tab.textKeyLineMap.size === 0) {
+    return null;
+  }
+
+  const metrics = getInputPointerMetrics();
+  const y = event.clientY - metrics.rect.top + inputBox.scrollTop - metrics.paddingTop;
+  const x = event.clientX - metrics.rect.left + inputBox.scrollLeft - metrics.paddingLeft;
+  const lineIndex = Math.floor(y / metrics.lineHeight);
+  if (lineIndex < 0) {
+    return null;
+  }
+
+  const entries = tab.textKeyLineMap.get(lineIndex);
+  if (!Array.isArray(entries) || entries.length === 0) {
+    return null;
+  }
+
+  const column = Math.floor(x / metrics.charWidth);
+  for (const entry of entries) {
+    if (column >= entry.startColumn && column <= entry.endColumn) {
+      return entry;
+    }
+  }
+
+  return null;
+}
+
+function getOffsetFromMouseEvent(event) {
+  if (!event) {
+    return null;
+  }
+
+  const x = event.clientX;
+  const y = event.clientY;
+  if (typeof x !== 'number' || typeof y !== 'number') {
+    return null;
+  }
+
+  if (document.caretPositionFromPoint) {
+    const position = document.caretPositionFromPoint(x, y);
+    if (position && typeof position.offset === 'number') {
+      return position.offset;
+    }
+  }
+
+  if (document.caretRangeFromPoint) {
+    const range = document.caretRangeFromPoint(x, y);
+    if (range && typeof range.startOffset === 'number') {
+      return range.startOffset;
+    }
+  }
+
+  return null;
+}
+
+function jumpFromTextOffset(offset) {
+  const tab = currentTab();
+  if (!tab) {
+    return;
+  }
+  const marker = findMarkerAtOffset(tab.textPathMarkers, offset, { strict: true, keyOnly: true });
+  if (!marker || !Array.isArray(marker.path)) {
+    return;
+  }
+  jumpToPath(marker.path);
 }
 
 function jumpToPath(path) {
@@ -515,35 +706,237 @@ function escapeHtml(text) {
     .replace(/>/g, '&gt;');
 }
 
-function highlightInput(text) {
-  const escaped = escapeHtml(text);
+function parseJsonPathMarkers(text) {
+  let index = 0;
+  const markers = [];
+
+  function skipWhitespace() {
+    while (index < text.length && /\s/.test(text[index])) {
+      index += 1;
+    }
+  }
+
+  function parseStringToken() {
+    if (text[index] !== '"') {
+      throw new Error('Expected string token.');
+    }
+    const start = index;
+    index += 1;
+    while (index < text.length) {
+      const ch = text[index];
+      if (ch === '\\') {
+        index += 2;
+        continue;
+      }
+      if (ch === '"') {
+        const end = index + 1;
+        const value = JSON.parse(text.slice(start, end));
+        index = end;
+        return { value, start, end };
+      }
+      index += 1;
+    }
+    throw new Error('Unterminated string.');
+  }
+
+  function parseLiteral() {
+    const start = index;
+    while (index < text.length && /[A-Za-z]/.test(text[index])) {
+      index += 1;
+    }
+    return { start, end: index };
+  }
+
+  function parseNumber() {
+    const start = index;
+    if (text[index] === '-') {
+      index += 1;
+    }
+    while (index < text.length && /[0-9]/.test(text[index])) {
+      index += 1;
+    }
+    if (text[index] === '.') {
+      index += 1;
+      while (index < text.length && /[0-9]/.test(text[index])) {
+        index += 1;
+      }
+    }
+    if (text[index] === 'e' || text[index] === 'E') {
+      index += 1;
+      if (text[index] === '+' || text[index] === '-') {
+        index += 1;
+      }
+      while (index < text.length && /[0-9]/.test(text[index])) {
+        index += 1;
+      }
+    }
+    return { start, end: index };
+  }
+
+  function parseValue(path) {
+    skipWhitespace();
+    const start = index;
+    const ch = text[index];
+
+    if (ch === '{') {
+      markers.push({ type: 'value', path: [...path], start, end: start + 1 });
+      parseObject(path);
+      return;
+    }
+    if (ch === '[') {
+      markers.push({ type: 'value', path: [...path], start, end: start + 1 });
+      parseArray(path);
+      return;
+    }
+    if (ch === '"') {
+      const token = parseStringToken();
+      markers.push({ type: 'value', path: [...path], start: token.start, end: token.end });
+      return;
+    }
+    if (/[0-9-]/.test(ch)) {
+      const token = parseNumber();
+      markers.push({ type: 'value', path: [...path], start: token.start, end: token.end });
+      return;
+    }
+    if (/[A-Za-z]/.test(ch)) {
+      const token = parseLiteral();
+      markers.push({ type: 'value', path: [...path], start: token.start, end: token.end });
+      return;
+    }
+    throw new Error('Unexpected token.');
+  }
+
+  function parseObject(path) {
+    if (text[index] !== '{') {
+      throw new Error('Expected object.');
+    }
+    index += 1;
+    skipWhitespace();
+    if (text[index] === '}') {
+      index += 1;
+      return;
+    }
+
+    while (index < text.length) {
+      skipWhitespace();
+      const keyToken = parseStringToken();
+      const keyPath = [...path, keyToken.value];
+      markers.push({ type: 'key', path: keyPath, start: keyToken.start, end: keyToken.end });
+      skipWhitespace();
+      if (text[index] !== ':') {
+        throw new Error('Expected colon after object key.');
+      }
+      index += 1;
+      parseValue(keyPath);
+      skipWhitespace();
+      if (text[index] === ',') {
+        index += 1;
+        continue;
+      }
+      if (text[index] === '}') {
+        index += 1;
+        return;
+      }
+      throw new Error('Expected comma or object close.');
+    }
+    throw new Error('Unterminated object.');
+  }
+
+  function parseArray(path) {
+    if (text[index] !== '[') {
+      throw new Error('Expected array.');
+    }
+    index += 1;
+    skipWhitespace();
+    if (text[index] === ']') {
+      index += 1;
+      return;
+    }
+
+    let itemIndex = 0;
+    while (index < text.length) {
+      const itemPath = [...path, itemIndex];
+      parseValue(itemPath);
+      itemIndex += 1;
+      skipWhitespace();
+      if (text[index] === ',') {
+        index += 1;
+        continue;
+      }
+      if (text[index] === ']') {
+        index += 1;
+        return;
+      }
+      throw new Error('Expected comma or array close.');
+    }
+    throw new Error('Unterminated array.');
+  }
+
+  try {
+    skipWhitespace();
+    parseValue([]);
+    skipWhitespace();
+    if (index !== text.length) {
+      return [];
+    }
+    return markers.sort((left, right) => left.start - right.start);
+  } catch (error) {
+    return [];
+  }
+}
+
+function highlightInput(text, markers = []) {
   const tokenPattern =
     /"(?:\\.|[^"\\])*"|\btrue\b|\bfalse\b|\bnull\b|-?\d+(?:\.\d+)?(?:[eE][+\-]?\d+)?|#[^\n]*/g;
+  const keyMarkerMap = new Map();
+  markers.forEach((marker) => {
+    if (marker.type === 'key') {
+      keyMarkerMap.set(marker.start, marker);
+    }
+  });
 
-  return escaped.replace(tokenPattern, (match, offset, fullText) => {
-    if (match.startsWith('"')) {
-      let cursor = offset + match.length;
-      while (cursor < fullText.length && /\s/.test(fullText[cursor])) {
+  let html = '';
+  let lastIndex = 0;
+  let match = tokenPattern.exec(text);
+  while (match) {
+    const [token] = match;
+    const start = match.index;
+    const end = start + token.length;
+    html += escapeHtml(text.slice(lastIndex, start));
+
+    if (token.startsWith('"')) {
+      let cursor = end;
+      while (cursor < text.length && /\s/.test(text[cursor])) {
         cursor += 1;
       }
-      const className = fullText[cursor] === ':' ? 'token-key' : 'token-string';
-      return `<span class="${className}">${match}</span>`;
+      const isKey = text[cursor] === ':';
+      if (isKey) {
+        const marker = keyMarkerMap.get(start);
+        if (marker) {
+          const pathToken = escapeHtml(encodePath(marker.path));
+          html += `<span class="token-key token-jump-target" data-node-path="${pathToken}" data-marker-start="${String(marker.start)}">${escapeHtml(token)}</span>`;
+        } else {
+          html += `<span class="token-key">${escapeHtml(token)}</span>`;
+        }
+      } else {
+        html += `<span class="token-string">${escapeHtml(token)}</span>`;
+      }
+    } else if (token === 'true' || token === 'false') {
+      html += `<span class="token-bool">${escapeHtml(token)}</span>`;
+    } else if (token === 'null') {
+      html += `<span class="token-null">${escapeHtml(token)}</span>`;
+    } else if (token.startsWith('#')) {
+      html += `<span class="token-comment">${escapeHtml(token)}</span>`;
+    } else {
+      html += `<span class="token-number">${escapeHtml(token)}</span>`;
     }
 
-    if (match === 'true' || match === 'false') {
-      return `<span class="token-bool">${match}</span>`;
-    }
+    lastIndex = end;
+    match = tokenPattern.exec(text);
+  }
 
-    if (match === 'null') {
-      return `<span class="token-null">${match}</span>`;
-    }
-
-    if (match.startsWith('#')) {
-      return `<span class="token-comment">${match}</span>`;
-    }
-
-    return `<span class="token-number">${match}</span>`;
-  });
+  html += escapeHtml(text.slice(lastIndex));
+  return html;
 }
 
 function containsQuery(query, text) {
@@ -1485,27 +1878,115 @@ function loadOpenedFile(payload) {
   parseAndRender(false);
 }
 
+function renderJumpButtons(text, markers = []) {
+  if (!jumpButtonLayer) {
+    return;
+  }
+
+  jumpButtonLayer.innerHTML = '';
+  setHoveredKeyMarkerEntry(null);
+  const tab = currentTab();
+  if (tab) {
+    tab.textKeyLineMap = new Map();
+  }
+  if (!Array.isArray(markers) || markers.length === 0) {
+    return;
+  }
+
+  const keyMarkers = markers.filter((marker) => marker.type === 'key');
+  if (keyMarkers.length === 0) {
+    return;
+  }
+
+  const computed = window.getComputedStyle(inputBox);
+  const paddingTopPx = Number.parseFloat(computed.paddingTop) || 14;
+  const lineHeightPx = Number.parseFloat(computed.lineHeight) || 20;
+  const buttonSizePx = 17.28;
+  const buttonOffsetPx = (lineHeightPx - buttonSizePx) / 2;
+
+  const lineStarts = [0];
+  for (let i = 0; i < text.length; i += 1) {
+    if (text.charCodeAt(i) === 10) {
+      lineStarts.push(i + 1);
+    }
+  }
+
+  const firstMarkerByLine = new Map();
+  const markersByLine = new Map();
+  let lineCursor = 0;
+  for (const marker of keyMarkers) {
+    while (lineCursor + 1 < lineStarts.length && lineStarts[lineCursor + 1] <= marker.start) {
+      lineCursor += 1;
+    }
+
+    const startColumn = marker.start - lineStarts[lineCursor];
+    const endColumn = marker.end - lineStarts[lineCursor];
+    if (!markersByLine.has(lineCursor)) {
+      markersByLine.set(lineCursor, []);
+    }
+    markersByLine.get(lineCursor).push({
+      ...marker,
+      lineIndex: lineCursor,
+      startColumn,
+      endColumn
+    });
+
+    if (!firstMarkerByLine.has(lineCursor)) {
+      firstMarkerByLine.set(lineCursor, marker);
+    }
+  }
+
+  if (tab) {
+    tab.textKeyLineMap = markersByLine;
+  }
+
+  firstMarkerByLine.forEach((marker, lineIndex) => {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'text-jump-btn';
+    button.title = 'Jump to structure node';
+    button.dataset.nodePath = encodePath(marker.path);
+    button.style.top = `${paddingTopPx + lineIndex * lineHeightPx + buttonOffsetPx}px`;
+    button.textContent = '↗';
+    jumpButtonLayer.appendChild(button);
+  });
+}
+
 function syncHighlight() {
   const tab = currentTab();
   const text = tab ? tab.input : '';
   const plainTextMode = isLargeInputText(text);
+  const markers = parseJsonPathMarkers(text);
+  if (tab) {
+    tab.textPathMarkers = markers;
+  }
+  setHoveredTextMarker(null);
+  hideTextHoverUnderline();
   if (editorWrap) {
     editorWrap.classList.toggle('plain-text-mode', plainTextMode);
   }
   if (plainTextMode) {
     updateLineNumbers(text);
+    renderJumpButtons(text, markers);
     highlightLayer.textContent = '\n';
     if (lineNumberLayer) {
       lineNumberLayer.scrollTop = inputBox.scrollTop;
+    }
+    if (jumpButtonLayer) {
+      jumpButtonLayer.scrollTop = inputBox.scrollTop;
     }
     highlightLayer.scrollTop = inputBox.scrollTop;
     highlightLayer.scrollLeft = inputBox.scrollLeft;
     return;
   }
   updateLineNumbers(text);
-  highlightLayer.innerHTML = `${highlightInput(text)}\n`;
+  renderJumpButtons(text, markers);
+  highlightLayer.innerHTML = `${highlightInput(text, markers)}\n`;
   if (lineNumberLayer) {
     lineNumberLayer.scrollTop = inputBox.scrollTop;
+  }
+  if (jumpButtonLayer) {
+    jumpButtonLayer.scrollTop = inputBox.scrollTop;
   }
   highlightLayer.scrollTop = inputBox.scrollTop;
   highlightLayer.scrollLeft = inputBox.scrollLeft;
@@ -1830,6 +2311,32 @@ treeRoot.addEventListener(
   true
 );
 
+highlightLayer.addEventListener('click', (event) => {
+  const target = event.target.closest('[data-node-path]');
+  if (!target) {
+    return;
+  }
+  const path = decodePath(target.dataset.nodePath || '');
+  if (!path) {
+    return;
+  }
+  jumpToPath(path);
+});
+
+if (jumpButtonLayer) {
+  jumpButtonLayer.addEventListener('click', (event) => {
+    const target = event.target.closest('.text-jump-btn[data-node-path]');
+    if (!target) {
+      return;
+    }
+    const path = decodePath(target.dataset.nodePath || '');
+    if (!path) {
+      return;
+    }
+    jumpToPath(path);
+  });
+}
+
 if (nodeBreadcrumb) {
   nodeBreadcrumb.addEventListener('click', (event) => {
     const target = event.target.closest('.breadcrumb-item[data-breadcrumb-path]');
@@ -1872,8 +2379,49 @@ inputBox.addEventListener('scroll', () => {
   if (lineNumberLayer) {
     lineNumberLayer.scrollTop = inputBox.scrollTop;
   }
+  if (jumpButtonLayer) {
+    jumpButtonLayer.scrollTop = inputBox.scrollTop;
+  }
   highlightLayer.scrollTop = inputBox.scrollTop;
   highlightLayer.scrollLeft = inputBox.scrollLeft;
+  refreshTextHoverUnderline();
+});
+
+inputBox.addEventListener('click', (event) => {
+  const marker = findKeyMarkerFromPointerEvent(event);
+  if (marker && Array.isArray(marker.path)) {
+    setHoveredTextMarker(marker.start);
+    setHoveredKeyMarkerEntry(marker);
+    jumpToPath(marker.path);
+    return;
+  }
+
+  setHoveredTextMarker(null);
+  setHoveredKeyMarkerEntry(null);
+});
+
+inputBox.addEventListener('mousemove', (event) => {
+  const marker = findKeyMarkerFromPointerEvent(event);
+  if (!marker) {
+    setHoveredTextMarker(null);
+    setHoveredKeyMarkerEntry(null);
+    return;
+  }
+  setHoveredTextMarker(marker.start);
+  setHoveredKeyMarkerEntry(marker);
+});
+
+inputBox.addEventListener('mouseleave', () => {
+  setHoveredTextMarker(null);
+  setHoveredKeyMarkerEntry(null);
+});
+
+inputBox.addEventListener('keyup', () => {
+  updateHoveredTextMarkerFromOffset(inputBox.selectionStart);
+});
+
+inputBox.addEventListener('select', () => {
+  updateHoveredTextMarkerFromOffset(inputBox.selectionStart);
 });
 
 if (renderBtn) {
