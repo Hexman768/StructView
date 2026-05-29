@@ -175,9 +175,11 @@ button.breadcrumb-item {
 }
 
 .layout {
+  --editor-pane-size: 45%;
+  position: relative;
   display: grid;
-  grid-template-columns: minmax(340px, 45%) 1fr;
-  gap: 1rem;
+  grid-template-columns: minmax(300px, var(--editor-pane-size)) 12px minmax(300px, 1fr);
+  gap: 0.45rem;
   padding: 0.75rem 1.5rem 1.5rem;
   height: calc(100vh - 220px);
 }
@@ -188,6 +190,45 @@ body.structure-only-mode .layout {
 
 body.structure-only-mode .editor-panel {
   display: none;
+}
+
+body.structure-only-mode .pane-resizer {
+  display: none;
+}
+
+.pane-resizer {
+  align-self: stretch;
+  border-radius: 999px;
+  border: 1px solid #2f5879;
+  background: linear-gradient(180deg, #10283f, #0a1c2f);
+  cursor: col-resize;
+}
+
+.pane-resizer:hover {
+  border-color: #59a8d8;
+  background: linear-gradient(180deg, #173652, #0e2842);
+}
+
+body.resizing-panes {
+  cursor: col-resize;
+  user-select: none;
+}
+
+body.resizing-panes .layout {
+  will-change: grid-template-columns;
+}
+
+.pane-resize-guide {
+  position: absolute;
+  top: 0.75rem;
+  bottom: 1.5rem;
+  width: 2px;
+  border-radius: 999px;
+  background: #59a8d8;
+  box-shadow: 0 0 0 1px rgba(13, 40, 63, 0.65);
+  transform: translateX(-50%);
+  pointer-events: none;
+  z-index: 20;
 }
 
 .panel {
@@ -627,6 +668,10 @@ body.structure-only-mode .editor-panel {
   .layout {
     grid-template-columns: 1fr;
     height: auto;
+  }
+
+  .pane-resizer {
+    display: none;
   }
 
   .panel {
