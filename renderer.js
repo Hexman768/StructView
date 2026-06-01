@@ -4,6 +4,8 @@ const inputBox = document.getElementById('input-box');
 const lineNumberLayer = document.getElementById('line-number-layer');
 const highlightLayer = document.getElementById('highlight-layer');
 const editorWrap = document.getElementById('editor-wrap');
+const layoutEl = document.querySelector('.layout');
+const paneResizer = document.getElementById('pane-resizer');
 const treeRoot = document.getElementById('tree-root');
 const statusEl = document.getElementById('status');
 const searchInput = document.getElementById('tree-search');
@@ -22,6 +24,8 @@ const beautifyButton = document.getElementById('beautify-btn');
 const bodyEl = document.body;
 const LARGE_FILE_HIDE_INPUT_LINE_THRESHOLD = 10000;
 const LARGE_EDIT_CHAR_THRESHOLD = 200000;
+const MOBILE_LAYOUT_BREAKPOINT = 980;
+const MIN_PANE_WIDTH_PX = 280;
 
 let parseDebounce;
 let nextTabId = 1;
@@ -32,6 +36,8 @@ let renderedLineNumberCount = -1;
 let parseRequestId = 0;
 let searchRequestId = 0;
 let searchDebounce;
+let paneResizeState = null;
+let paneResizeGuide = null;
 
 function loadAppSettings() {
   const defaults = {
@@ -111,6 +117,13 @@ function shouldHideEditor(tab) {
   return Boolean(tab && tab.hideEditorForLargeFile);
 }
 
+function updatePaneResizerVisibility(tab = currentTab()) {
+  if (!paneResizer) {
+    return;
+  }
+  paneResizer.hidden = shouldHideEditor(tab) || window.innerWidth <= MOBILE_LAYOUT_BREAKPOINT;
+}
+
 function applyPaneVisibility(tab = currentTab()) {
   const hideEditor = shouldHideEditor(tab);
   bodyEl.classList.toggle('structure-only-mode', hideEditor);
@@ -120,7 +133,99 @@ function applyPaneVisibility(tab = currentTab()) {
   if (showTextPaneButton) {
     showTextPaneButton.hidden = !hideEditor;
   }
+  updatePaneResizerVisibility(tab);
   updateBeautifyVisibility(tab);
+}
+
+function setEditorPaneSize(px) {
+  if (!layoutEl || !Number.isFinite(px)) {
+    return;
+  }
+  layoutEl.style.setProperty('--editor-pane-size', `${Math.round(px)}px`);
+}
+
+function ensurePaneResizeGuide() {
+  if (!layoutEl) {
+    return null;
+  }
+  if (!paneResizeGuide) {
+    paneResizeGuide = document.createElement('div');
+    paneResizeGuide.className = 'pane-resize-guide';
+    paneResizeGuide.hidden = true;
+    layoutEl.appendChild(paneResizeGuide);
+  }
+  return paneResizeGuide;
+}
+
+function beginPaneResize(event) {
+  if (!layoutEl || !paneResizer || !event || window.innerWidth <= MOBILE_LAYOUT_BREAKPOINT) {
+    return;
+  }
+  if (shouldHideEditor(currentTab())) {
+    return;
+  }
+
+  const editorPanel = layoutEl.querySelector('.editor-panel');
+  if (!editorPanel) {
+    return;
+  }
+
+  const layoutRect = layoutEl.getBoundingClientRect();
+  const startWidth = editorPanel.getBoundingClientRect().width;
+  const guideStartX = event.clientX - layoutRect.left;
+  const maxPaneWidth = Math.max(
+    MIN_PANE_WIDTH_PX,
+    layoutRect.width - MIN_PANE_WIDTH_PX - (paneResizer.getBoundingClientRect().width || 12)
+  );
+
+  paneResizeState = {
+    startX: event.clientX,
+    startWidth,
+    minWidth: MIN_PANE_WIDTH_PX,
+    maxWidth: maxPaneWidth,
+    targetWidth: startWidth,
+    guideStartX
+  };
+
+  const guide = ensurePaneResizeGuide();
+  if (guide) {
+    guide.style.left = `${guideStartX}px`;
+    guide.hidden = false;
+  }
+
+  bodyEl.classList.add('resizing-panes');
+  event.preventDefault();
+}
+
+function onPaneResizeMove(event) {
+  if (!paneResizeState) {
+    return;
+  }
+
+  const delta = event.clientX - paneResizeState.startX;
+  const proposed = paneResizeState.startWidth + delta;
+  const clamped = Math.min(paneResizeState.maxWidth, Math.max(paneResizeState.minWidth, proposed));
+  paneResizeState.targetWidth = clamped;
+
+  if (paneResizeGuide) {
+    const guideX = paneResizeState.guideStartX + (clamped - paneResizeState.startWidth);
+    paneResizeGuide.style.left = `${guideX}px`;
+  }
+}
+
+function endPaneResize() {
+  if (!paneResizeState) {
+    return;
+  }
+
+  if (Number.isFinite(paneResizeState.targetWidth)) {
+    setEditorPaneSize(paneResizeState.targetWidth);
+  }
+  if (paneResizeGuide) {
+    paneResizeGuide.hidden = true;
+  }
+  paneResizeState = null;
+  bodyEl.classList.remove('resizing-panes');
 }
 
 function hasYamlFileExtension(fileName) {
@@ -2077,6 +2182,17 @@ if (addTabButton) {
     addTab('');
   });
 }
+
+if (paneResizer) {
+  paneResizer.addEventListener('pointerdown', beginPaneResize);
+}
+
+window.addEventListener('pointermove', onPaneResizeMove);
+window.addEventListener('pointerup', endPaneResize);
+window.addEventListener('blur', endPaneResize);
+window.addEventListener('resize', () => {
+  updatePaneResizerVisibility(currentTab());
+});
 
 const api = window.structViewApi;
 if (api && typeof api.onOpenFile === 'function') {
