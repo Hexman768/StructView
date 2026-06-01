@@ -35,6 +35,7 @@ let dragState = null;
 let renderedLineNumberCount = -1;
 let parseRequestId = 0;
 let searchRequestId = 0;
+let treeRenderRequestId = 0;
 let searchDebounce;
 let paneResizeState = null;
 let paneResizeGuide = null;
@@ -77,6 +78,7 @@ function makeTabState(initialInput = '') {
     statusType: 'neutral',
     parsedFormat: 'JSON',
     parseFallback: false,
+    docKey: null,
     expandedPaths: new Set(),
     asyncSearchMode: false,
     asyncSearchResults: [],
@@ -549,6 +551,7 @@ function beautifyCurrentTab() {
   const beautified = JSON.stringify(parsed, null, 4);
   tab.input = beautified;
   tab.parsedData = parsed;
+  tab.docKey = null;
   tab.parsedFormat = 'JSON';
   tab.parseFallback = false;
 
@@ -887,6 +890,7 @@ function serializeParsedData(tab) {
 
 function refreshTextPaneFromTab(tab) {
   tab.input = serializeParsedData(tab);
+  tab.docKey = null;
   refreshDirtyState(tab);
   inputBox.value = tab.input;
   updateSaveButton(tab);
@@ -900,10 +904,7 @@ function applyStructureChange(message) {
   }
 
   refreshTextPaneFromTab(tab);
-  renderStructure(tab.parsedData, tab.search, false, false);
-  if (tab.search.trim() && tab.matches.length > 0) {
-    setActiveMatch(tab.activeMatchIndex >= 0 ? tab.activeMatchIndex : 0, tab.search.trim(), false);
-  }
+  void renderStructure(tab.parsedData, tab.search, false, false);
   setStatus(message, 'success');
 }
 
@@ -1311,12 +1312,16 @@ function setActiveMatch(index, query, scroll = true) {
     const match = tab.asyncSearchResults[normalizedIndex];
     focusPathMatch(match, scroll);
   } else {
-    const matchEl = tab.matches[normalizedIndex];
-    matchEl.classList.add('active-match');
-    openDetailsPathForMatch(matchEl);
-    updateInteractionPathFromTarget(matchEl);
-    if (scroll) {
-      matchEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    const match = tab.matches[normalizedIndex];
+    if (match && typeof match === 'object' && Array.isArray(match.path)) {
+      focusPathMatch(match, scroll);
+    } else if (match instanceof Element) {
+      match.classList.add('active-match');
+      openDetailsPathForMatch(match);
+      updateInteractionPathFromTarget(match);
+      if (scroll) {
+        match.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      }
     }
   }
 
@@ -1324,7 +1329,7 @@ function setActiveMatch(index, query, scroll = true) {
   updateMatchButtons();
 }
 
-function renderStructure(data, query = '', jumpToMatch = false, focusNextButton = false) {
+function renderStructureLegacy(data, query = '', jumpToMatch = false, focusNextButton = false) {
   const tab = currentTab();
   if (!tab) {
     return;
@@ -1372,6 +1377,262 @@ function renderStructure(data, query = '', jumpToMatch = false, focusNextButton 
   renderInteractionBreadcrumb(tab);
 }
 
+function buildPrimitiveNodeFromRow(row) {
+  const wrapper = document.createElement('div');
+  wrapper.className = 'node primitive-row';
+  wrapper.dataset.nodePath = row.pathToken;
+
+  const content = document.createElement('div');
+  content.className = 'primitive';
+
+  if (row.hasDrag) {
+    const dragHandle = document.createElement('span');
+    dragHandle.className = 'node-drag-handle';
+    dragHandle.textContent = '::';
+    dragHandle.draggable = true;
+    dragHandle.dataset.dragSourcePath = row.pathToken;
+    dragHandle.title = 'Drag to move this node';
+    content.appendChild(dragHandle);
+  }
+
+  if (row.indexMeta) {
+    const indexBadge = document.createElement('span');
+    indexBadge.className = 'node-meta';
+    indexBadge.textContent = row.indexMeta;
+    content.appendChild(indexBadge);
+  }
+
+  const key = document.createElement('span');
+  key.className = `node-key${row.keyMatch ? ' match-hit' : ''}`;
+  key.textContent = row.label;
+
+  const type = document.createElement('span');
+  type.className = 'node-type';
+  type.textContent = row.nodeType || 'Value';
+
+  const primitiveValue = document.createElement('span');
+  primitiveValue.className = `primitive-value${row.valueMatch ? ' match-hit' : ''}`;
+  primitiveValue.textContent = row.primitiveText || '';
+
+  const editButton = document.createElement('button');
+  editButton.type = 'button';
+  editButton.className = 'node-edit-btn';
+  editButton.textContent = 'Edit';
+  editButton.dataset.editPath = row.pathToken;
+  editButton.draggable = false;
+
+  content.append(key, type, primitiveValue, editButton);
+  wrapper.appendChild(content);
+
+  const editor = document.createElement('div');
+  editor.className = 'node-inline-editor';
+  editor.dataset.editorPath = row.pathToken;
+  editor.dataset.editorMode = 'primitive';
+
+  const keyInput = document.createElement('input');
+  keyInput.type = 'text';
+  keyInput.className = 'node-inline-input node-inline-key';
+  keyInput.value = row.label;
+  keyInput.disabled = !row.canRename;
+
+  const valueInput = document.createElement('input');
+  valueInput.type = 'text';
+  valueInput.className = 'node-inline-input node-inline-value';
+  valueInput.value = row.editValue || '';
+
+  const saveButton = document.createElement('button');
+  saveButton.type = 'button';
+  saveButton.className = 'node-inline-save';
+  saveButton.textContent = 'Save';
+  saveButton.dataset.savePath = row.pathToken;
+  saveButton.dataset.saveMode = 'primitive';
+
+  const cancelButton = document.createElement('button');
+  cancelButton.type = 'button';
+  cancelButton.className = 'node-inline-cancel';
+  cancelButton.textContent = 'Cancel';
+  cancelButton.dataset.cancelPath = row.pathToken;
+
+  editor.append(keyInput, valueInput, saveButton, cancelButton);
+  wrapper.appendChild(editor);
+  return { wrapper };
+}
+
+function buildBranchNodeFromRow(row) {
+  const wrapper = document.createElement('div');
+  wrapper.className = 'node';
+  wrapper.dataset.nodePath = row.pathToken;
+
+  const details = document.createElement('details');
+  details.dataset.nodePath = row.pathToken;
+  details.open = Boolean(row.isOpen);
+
+  const summary = document.createElement('summary');
+  summary.className = 'node-summary';
+  summary.dataset.dropTargetPath = row.pathToken;
+
+  if (row.hasDrag) {
+    const dragHandle = document.createElement('span');
+    dragHandle.className = 'node-drag-handle';
+    dragHandle.textContent = '::';
+    dragHandle.draggable = true;
+    dragHandle.dataset.dragSourcePath = row.pathToken;
+    dragHandle.title = 'Drag to move this node';
+    summary.appendChild(dragHandle);
+  }
+
+  const key = document.createElement('span');
+  key.className = `node-key${row.keyMatch ? ' match-hit' : ''}`;
+  key.textContent = row.label;
+
+  const type = document.createElement('span');
+  type.className = 'node-type';
+  type.textContent = row.nodeType || 'Object';
+
+  const meta = document.createElement('span');
+  meta.className = 'node-meta';
+  meta.textContent = row.meta || '';
+
+  const branchEdit = document.createElement('button');
+  branchEdit.type = 'button';
+  branchEdit.className = 'node-edit-btn';
+  branchEdit.textContent = 'Edit';
+  branchEdit.dataset.editPath = row.pathToken;
+  branchEdit.draggable = false;
+
+  summary.append(key, type, meta, branchEdit);
+  details.appendChild(summary);
+
+  const editor = document.createElement('div');
+  editor.className = 'node-inline-editor';
+  editor.dataset.editorPath = row.pathToken;
+  editor.dataset.editorMode = 'branch';
+
+  const keyInput = document.createElement('input');
+  keyInput.type = 'text';
+  keyInput.className = 'node-inline-input node-inline-key';
+  keyInput.value = row.label;
+  keyInput.disabled = !row.canRename;
+
+  const saveButton = document.createElement('button');
+  saveButton.type = 'button';
+  saveButton.className = 'node-inline-save';
+  saveButton.textContent = 'Save';
+  saveButton.dataset.savePath = row.pathToken;
+  saveButton.dataset.saveMode = 'branch';
+
+  const cancelButton = document.createElement('button');
+  cancelButton.type = 'button';
+  cancelButton.className = 'node-inline-cancel';
+  cancelButton.textContent = 'Cancel';
+  cancelButton.dataset.cancelPath = row.pathToken;
+
+  editor.append(keyInput, saveButton, cancelButton);
+  details.appendChild(editor);
+
+  const childrenWrap = document.createElement('div');
+  childrenWrap.className = 'node-children';
+  childrenWrap.dataset.dropTargetPath = row.pathToken;
+  details.appendChild(childrenWrap);
+
+  wrapper.appendChild(details);
+  return { wrapper, childrenWrap };
+}
+
+function renderTreeRows(rows) {
+  treeRoot.innerHTML = '';
+  if (!Array.isArray(rows) || rows.length === 0) {
+    treeRoot.innerHTML = '<p class="node-meta">Structure will appear here after successful parsing.</p>';
+    return;
+  }
+
+  const containerById = new Map();
+  containerById.set(0, treeRoot);
+
+  rows.forEach((row) => {
+    const parent = containerById.get(row.parentId) || treeRoot;
+    if (row.isBranch) {
+      const { wrapper, childrenWrap } = buildBranchNodeFromRow(row);
+      parent.appendChild(wrapper);
+      containerById.set(row.id, childrenWrap);
+      return;
+    }
+
+    const { wrapper } = buildPrimitiveNodeFromRow(row);
+    parent.appendChild(wrapper);
+  });
+}
+
+async function renderStructure(data, query = '', jumpToMatch = false, focusNextButton = false) {
+  const tab = currentTab();
+  if (!tab) {
+    return;
+  }
+
+  const normalizedQuery = query.trim().toLowerCase();
+  const requestId = ++treeRenderRequestId;
+  captureExpandedPaths();
+
+  const api = window.structViewApi;
+  if (!api || typeof api.buildTreeModelAsync !== 'function') {
+    renderStructureLegacy(data, query, jumpToMatch, focusNextButton);
+    return;
+  }
+
+  const result = await api.buildTreeModelAsync({
+    source: tab.input,
+    docKey: tab.docKey || '',
+    query: normalizedQuery,
+    expandedPaths: Array.from(tab.expandedPaths || []),
+    defaultExpandDepth: 2
+  });
+
+  if (requestId !== treeRenderRequestId || tab !== currentTab()) {
+    return;
+  }
+
+  if (!result || !result.ok || !Array.isArray(result.rows)) {
+    renderStructureLegacy(data, query, jumpToMatch, focusNextButton);
+    return;
+  }
+  tab.docKey = typeof result.docKey === 'string' && result.docKey ? result.docKey : tab.docKey;
+
+  if (Array.isArray(tab.interactionPath) && tab.interactionPath.length > 0) {
+    const activeNode = getNodeAtPath(data, tab.interactionPath);
+    if (activeNode === undefined) {
+      tab.interactionPath = null;
+    }
+  }
+
+  renderTreeRows(result.rows);
+  tab.asyncSearchMode = false;
+  tab.asyncSearchResults = [];
+  tab.matches = Array.isArray(result.matches) ? result.matches : [];
+
+  if (!normalizedQuery) {
+    clearActiveMatch();
+    tab.activeMatchIndex = -1;
+    if (searchStatus) {
+      searchStatus.textContent = 'Showing full structure.';
+    }
+    updateMatchButtons();
+    renderInteractionBreadcrumb(tab);
+    return;
+  }
+
+  if (jumpToMatch) {
+    setActiveMatch(0, query.trim(), true);
+    if (focusNextButton && searchNextButton && !searchNextButton.disabled) {
+      searchNextButton.focus();
+    }
+  } else if (searchStatus) {
+    const count = tab.matches.length;
+    searchStatus.textContent = `${count} match${count === 1 ? '' : 'es'} for "${query.trim()}".`;
+    updateMatchButtons();
+  }
+  renderInteractionBreadcrumb(tab);
+}
+
 async function parseSource(source) {
   const api = window.structViewApi;
 
@@ -1414,7 +1675,7 @@ async function runAsyncSearch(query, focusNextButton = false) {
   if (!trimmed) {
     tab.asyncSearchMode = false;
     tab.asyncSearchResults = [];
-    renderStructure(tab.parsedData, '', false, false);
+    await renderStructure(tab.parsedData, '', false, false);
     return;
   }
 
@@ -1424,12 +1685,13 @@ async function runAsyncSearch(query, focusNextButton = false) {
 
   const api = window.structViewApi;
   if (!api || typeof api.searchStructureAsync !== 'function') {
-    renderStructure(tab.parsedData, query, true, focusNextButton);
+    await renderStructure(tab.parsedData, query, true, focusNextButton);
     return;
   }
 
   const result = await api.searchStructureAsync({
     source: tab.input,
+    docKey: tab.docKey || '',
     query: trimmed,
     limit: 2000
   });
@@ -1446,6 +1708,9 @@ async function runAsyncSearch(query, focusNextButton = false) {
     updateMatchButtons();
     return;
   }
+  if (typeof result.docKey === 'string' && result.docKey) {
+    tab.docKey = result.docKey;
+  }
 
   tab.asyncSearchMode = true;
   tab.asyncSearchResults = Array.isArray(result.results)
@@ -1456,7 +1721,7 @@ async function runAsyncSearch(query, focusNextButton = false) {
   tab.matches = [];
   tab.activeMatchIndex = -1;
 
-  renderStructure(tab.parsedData, '', false, false);
+  await renderStructure(tab.parsedData, '', false, false);
   tab.asyncSearchMode = true;
   tab.asyncSearchResults = Array.isArray(result.results)
     ? result.results
@@ -1501,6 +1766,7 @@ async function parseAndRender(focusNextButton = false) {
 
     if (!parsed.ok) {
       tab.parsedData = null;
+      tab.docKey = null;
       tab.matches = [];
       tab.asyncSearchMode = false;
       tab.asyncSearchResults = [];
@@ -1518,20 +1784,22 @@ async function parseAndRender(focusNextButton = false) {
     }
 
     tab.parsedData = parsed.data;
+    tab.docKey = typeof parsed.docKey === 'string' && parsed.docKey ? parsed.docKey : null;
     tab.parsedFormat = parsed.format;
     tab.parseFallback = Boolean(parsed.fallback);
     if (tab.search.trim() && shouldUseAsyncSearch(tab)) {
-      renderStructure(parsed.data, '', false, false);
+      await renderStructure(parsed.data, '', false, false);
       await runAsyncSearch(tab.search, focusNextButton && Boolean(tab.search.trim()));
       setStatus(`Parsed as ${parsed.format}. Expand any box to inspect nested values.`, 'success');
       applyPaneVisibility(tab);
       return;
     }
-    renderStructure(parsed.data, tab.search, true, focusNextButton && Boolean(tab.search.trim()));
+    await renderStructure(parsed.data, tab.search, true, focusNextButton && Boolean(tab.search.trim()));
     setStatus(`Parsed as ${parsed.format}. Expand any box to inspect nested values.`, 'success');
     applyPaneVisibility(tab);
   } catch (error) {
     tab.parsedData = null;
+    tab.docKey = null;
     tab.matches = [];
     tab.asyncSearchMode = false;
     tab.asyncSearchResults = [];
@@ -1561,6 +1829,7 @@ function loadOpenedFile(payload) {
 
   clearTimeout(parseDebounce);
   tab.input = payload.content;
+  tab.docKey = null;
   tab.search = '';
   tab.matches = [];
   tab.asyncSearchMode = false;
@@ -1694,13 +1963,10 @@ function hydrateActiveTab() {
 
   if (tab.parsedData !== null) {
     if (tab.search.trim() && shouldUseAsyncSearch(tab)) {
-      renderStructure(tab.parsedData, '', false, false);
+      void renderStructure(tab.parsedData, '', false, false);
       runAsyncSearch(tab.search, false);
     } else {
-      renderStructure(tab.parsedData, tab.search, false, false);
-      if (tab.search.trim() && tab.matches.length > 0) {
-        setActiveMatch(tab.activeMatchIndex >= 0 ? tab.activeMatchIndex : 0, tab.search.trim(), false);
-      }
+      void renderStructure(tab.parsedData, tab.search, false, false);
     }
   } else {
     treeRoot.innerHTML = '<p class="node-meta">Structure will appear here after successful parsing.</p>';
@@ -1747,9 +2013,96 @@ function closeTab(id) {
 }
 
 function handleEditClick(event) {
-  const button = event.target.closest('.node-edit-btn');
-  if (!button) {
+  const cancelButton = event.target.closest('.node-inline-cancel[data-cancel-path]');
+  if (cancelButton) {
+    const editor = cancelButton.closest('.node-inline-editor');
+    if (editor) {
+      editor.classList.remove('visible');
+    }
     return;
+  }
+
+  const saveButton = event.target.closest('.node-inline-save[data-save-path]');
+  if (saveButton) {
+    event.preventDefault();
+    event.stopPropagation();
+
+    const path = decodePath(saveButton.dataset.savePath || '');
+    const saveMode = saveButton.dataset.saveMode || 'primitive';
+    const editor = saveButton.closest('.node-inline-editor');
+    const tab = currentTab();
+    if (!tab || !editor || !path || tab.parsedData === null) {
+      return;
+    }
+
+    try {
+      const keyInput = editor.querySelector('.node-inline-key');
+      let nextPath = path;
+      if (keyInput instanceof HTMLInputElement) {
+        nextPath = renamePathKeyIfNeeded(path, keyInput.value);
+      }
+
+      if (saveMode === 'primitive') {
+        const previousValue = getNodeAtPath(tab.parsedData, path);
+        const valueInput = editor.querySelector('.node-inline-value');
+        if (!(valueInput instanceof HTMLInputElement)) {
+          return;
+        }
+        const parsedValue = parseEditableValue(valueInput.value, previousValue);
+        tab.parsedData = setNodeAtPath(tab.parsedData, nextPath, parsedValue);
+        setInteractionPath(nextPath);
+        applyStructureChange('Updated element from Structure View.');
+        return;
+      }
+
+      setInteractionPath(nextPath);
+      applyStructureChange('Renamed element from Structure View.');
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setStatus(`Edit failed: ${message}`, 'error');
+    }
+    return;
+  }
+
+  const editButton = event.target.closest('.node-edit-btn[data-edit-path]');
+  if (!editButton) {
+    return;
+  }
+
+  event.preventDefault();
+  event.stopPropagation();
+
+  const path = decodePath(editButton.dataset.editPath || '');
+  if (path) {
+    setInteractionPath(path);
+  }
+
+  const host = editButton.closest('[data-node-path]');
+  if (!host) {
+    return;
+  }
+
+  const details = host.querySelector('details[data-node-path]');
+  if (details) {
+    details.open = true;
+  }
+
+  treeRoot.querySelectorAll('.node-inline-editor.visible').forEach((editor) => {
+    if (!host.contains(editor)) {
+      editor.classList.remove('visible');
+    }
+  });
+
+  const editor = host.querySelector('.node-inline-editor');
+  if (!editor) {
+    return;
+  }
+
+  editor.classList.add('visible');
+  const primaryInput = editor.querySelector('.node-inline-value, .node-inline-key');
+  if (primaryInput instanceof HTMLInputElement) {
+    primaryInput.focus();
+    primaryInput.select();
   }
 }
 
@@ -1905,6 +2258,9 @@ function handleDrop(event) {
 
 treeRoot.addEventListener('click', handleEditClick);
 treeRoot.addEventListener('click', (event) => {
+  if (event.target.closest('.node-edit-btn, .node-inline-editor')) {
+    return;
+  }
   updateInteractionPathFromTarget(event.target);
 });
 treeRoot.addEventListener('focusin', (event) => {
@@ -1956,6 +2312,7 @@ inputBox.addEventListener('input', () => {
   }
 
   tab.input = inputBox.value;
+  tab.docKey = null;
   tab.asyncSearchMode = false;
   tab.asyncSearchResults = [];
   refreshDirtyState(tab);
@@ -2020,6 +2377,7 @@ if (clearTextButton) {
 
     clearTimeout(parseDebounce);
     tab.input = '';
+    tab.docKey = null;
     tab.parsedData = null;
     tab.matches = [];
     tab.activeMatchIndex = -1;
@@ -2092,7 +2450,7 @@ if (searchInput) {
           runAsyncSearch(tab.search, false);
         }, 250);
       } else {
-        renderStructure(tab.parsedData, tab.search, true, false);
+        void renderStructure(tab.parsedData, tab.search, true, false);
       }
     }
   });
@@ -2124,7 +2482,7 @@ if (searchInput) {
               searchNextButton.focus();
             }
           } else {
-            renderStructure(tab.parsedData, tab.search, true, true);
+            void renderStructure(tab.parsedData, tab.search, true, true);
           }
         }
       }
@@ -2145,7 +2503,7 @@ if (searchClearButton) {
     tab.asyncSearchResults = [];
 
     if (tab.parsedData !== null) {
-      renderStructure(tab.parsedData, '', false, false);
+      void renderStructure(tab.parsedData, '', false, false);
     }
 
     searchInput.focus();

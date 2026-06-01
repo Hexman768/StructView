@@ -25,5 +25,6 @@ StructView with an example JSON file loaded:
 
 1. Install dependencies:
    `npm install`
-2. Start the desktop app:
+2. Ensure Go is installed and available on your `PATH` (the Electron main process starts a Go backend service).
+3. Start the desktop app:
    `npm start`

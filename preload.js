@@ -63,6 +63,7 @@ contextBridge.exposeInMainWorld('structViewApi', {
   parseInput,
   parseInputAsync: (text) => ipcRenderer.invoke('parse-input-async', text || ''),
   searchStructureAsync: (payload) => ipcRenderer.invoke('search-structure-async', payload || {}),
+  buildTreeModelAsync: (payload) => ipcRenderer.invoke('build-tree-model-async', payload || {}),
   getSettings,
   stringifyYaml,
   onOpenFile: (handler) => {

@@ -1,8 +1,15 @@
 const { app, BrowserWindow, Menu, dialog, ipcMain, nativeImage } = require('electron');
+const { spawn } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 const { Worker } = require('worker_threads');
 const iconPath = path.join(__dirname, 'assets', 'structview-logo.png');
+const goBackendEntry = path.join(__dirname, 'backend', 'cmd', 'structviewd');
+
+let goBackendProcess = null;
+let goBackendBuffer = '';
+let goRequestSeq = 1;
+const goPendingRequests = new Map();
 
 function createWindow() {
   const window = new BrowserWindow({
@@ -78,6 +85,120 @@ function searchStructureInWorker(source, query, limit = 2000) {
         reject(new Error(`Search worker exited with code ${code}`));
       }
     });
+  });
+}
+
+function rejectAllGoPending(message) {
+  goPendingRequests.forEach(({ reject }) => {
+    reject(new Error(message));
+  });
+  goPendingRequests.clear();
+}
+
+function handleGoBackendStdout(chunk) {
+  goBackendBuffer += chunk.toString('utf8');
+  let newlineIndex = goBackendBuffer.indexOf('\n');
+  while (newlineIndex >= 0) {
+    const rawLine = goBackendBuffer.slice(0, newlineIndex).trim();
+    goBackendBuffer = goBackendBuffer.slice(newlineIndex + 1);
+
+    if (rawLine) {
+      try {
+        const payload = JSON.parse(rawLine);
+        const pending = goPendingRequests.get(payload.id);
+        if (pending) {
+          goPendingRequests.delete(payload.id);
+          if (!payload.ok) {
+            pending.reject(new Error(payload.error || 'Unknown Go backend error.'));
+          } else {
+            pending.resolve(payload.result);
+          }
+        }
+      } catch (error) {
+        console.error('Invalid Go backend response:', rawLine, error);
+      }
+    }
+
+    newlineIndex = goBackendBuffer.indexOf('\n');
+  }
+}
+
+function ensureGoBackend() {
+  if (goBackendProcess && !goBackendProcess.killed && goBackendProcess.exitCode === null && goBackendProcess.signalCode === null) {
+    return goBackendProcess;
+  }
+
+  goBackendBuffer = '';
+  goBackendProcess = spawn('go', ['run', goBackendEntry], {
+    cwd: __dirname,
+    stdio: ['pipe', 'pipe', 'pipe']
+  });
+
+  goBackendProcess.stdout.on('data', handleGoBackendStdout);
+  goBackendProcess.stderr.on('data', (chunk) => {
+    const message = chunk.toString('utf8').trim();
+    if (message) {
+      console.error(`[go-backend] ${message}`);
+    }
+  });
+
+  if (goBackendProcess.stdin) {
+    goBackendProcess.stdin.on('error', (error) => {
+      const details = `Go backend stdin error: ${error.message}`;
+      rejectAllGoPending(details);
+      goBackendProcess = null;
+    });
+  }
+
+  goBackendProcess.on('exit', (code, signal) => {
+    const details = `Go backend exited (code=${code}, signal=${signal || 'none'})`;
+    rejectAllGoPending(details);
+    goBackendProcess = null;
+  });
+
+  goBackendProcess.on('error', (error) => {
+    const details = `Failed to start Go backend: ${error.message}`;
+    rejectAllGoPending(details);
+    goBackendProcess = null;
+  });
+
+  return goBackendProcess;
+}
+
+function requestGoBackend(method, params) {
+  return new Promise((resolve, reject) => {
+    const proc = ensureGoBackend();
+    const stdinClosed =
+      !proc ||
+      !proc.stdin ||
+      proc.killed ||
+      proc.exitCode !== null ||
+      proc.signalCode !== null ||
+      proc.stdin.destroyed ||
+      proc.stdin.writableEnded;
+    if (stdinClosed) {
+      reject(new Error('Go backend is not available.'));
+      return;
+    }
+
+    const id = goRequestSeq;
+    goRequestSeq += 1;
+    goPendingRequests.set(id, { resolve, reject });
+
+    const payload = JSON.stringify({ id, method, params });
+    try {
+      proc.stdin.write(`${payload}\n`, (error) => {
+        if (!error) {
+          return;
+        }
+        goPendingRequests.delete(id);
+        reject(new Error(`Failed to send request to Go backend: ${error.message}`));
+      });
+    } catch (error) {
+      goPendingRequests.delete(id);
+      const message = error instanceof Error ? error.message : String(error);
+      reject(new Error(`Failed to send request to Go backend: ${message}`));
+    }
   });
 }
 
@@ -258,10 +379,14 @@ app.whenReady().then(() => {
 
   ipcMain.handle('parse-input-async', async (_event, text) => {
     try {
-      return await parseInputInWorker(text);
+      return await requestGoBackend('parse', { text: text || '' });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      return { ok: false, error: `Parser worker failed: ${message}` };
+      try {
+        return await parseInputInWorker(text);
+      } catch (_fallbackError) {
+        return { ok: false, error: `Go parser failed: ${message}` };
+      }
     }
   });
 
@@ -270,10 +395,38 @@ app.whenReady().then(() => {
       const source = payload && typeof payload.source === 'string' ? payload.source : '';
       const query = payload && typeof payload.query === 'string' ? payload.query : '';
       const limit = payload && typeof payload.limit === 'number' ? payload.limit : 2000;
-      return await searchStructureInWorker(source, query, limit);
+      const docKey = payload && typeof payload.docKey === 'string' ? payload.docKey : '';
+      return await requestGoBackend('search', { source, query, limit, docKey });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      return { ok: false, error: `Search worker failed: ${message}` };
+      try {
+        const source = payload && typeof payload.source === 'string' ? payload.source : '';
+        const query = payload && typeof payload.query === 'string' ? payload.query : '';
+        const limit = payload && typeof payload.limit === 'number' ? payload.limit : 2000;
+        return await searchStructureInWorker(source, query, limit);
+      } catch (_fallbackError) {
+        return { ok: false, error: `Go search failed: ${message}` };
+      }
+    }
+  });
+
+  ipcMain.handle('build-tree-model-async', async (_event, payload) => {
+    try {
+      const source = payload && typeof payload.source === 'string' ? payload.source : '';
+      const query = payload && typeof payload.query === 'string' ? payload.query : '';
+      const expandedPaths = Array.isArray(payload?.expandedPaths) ? payload.expandedPaths : [];
+      const defaultExpandDepth = payload && typeof payload.defaultExpandDepth === 'number' ? payload.defaultExpandDepth : 2;
+      const docKey = payload && typeof payload.docKey === 'string' ? payload.docKey : '';
+      return await requestGoBackend('buildTreeRows', {
+        source,
+        docKey,
+        query,
+        expandedPaths,
+        defaultExpandDepth
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      return { ok: false, error: `Go tree model failed: ${message}` };
     }
   });
 
@@ -285,6 +438,9 @@ app.whenReady().then(() => {
 });
 
 app.on('window-all-closed', () => {
+  if (goBackendProcess && !goBackendProcess.killed) {
+    goBackendProcess.kill();
+  }
   if (process.platform !== 'darwin') {
     app.quit();
   }
