@@ -364,14 +364,6 @@ body.resizing-panes .layout {
   overflow: auto;
 }
 
-.editor-wrap.plain-text-mode .highlight-layer {
-  display: none;
-}
-
-.editor-wrap.plain-text-mode .input-box {
-  color: #d7e8f9;
-}
-
 .status {
   margin: 0 1rem 1rem;
   color: var(--muted);
