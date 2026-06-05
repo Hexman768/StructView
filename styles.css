@@ -148,10 +148,32 @@ button.breadcrumb-item {
   white-space: nowrap;
 }
 
+.tab-title {
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 .tab-btn.active {
   background: #1a4263;
   border-color: #51b3eb;
   color: #ffffff;
+}
+
+.tab-rename-input {
+  min-width: 8rem;
+  max-width: 18rem;
+  border: 1px solid #51b3eb;
+  border-radius: 7px;
+  background: #081522;
+  color: #f3fbff;
+  padding: 0.2rem 0.4rem;
+  font: inherit;
+}
+
+.tab-rename-input:focus {
+  outline: none;
+  box-shadow: 0 0 0 2px rgba(81, 179, 235, 0.24);
 }
 
 .tab-close {

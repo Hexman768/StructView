@@ -38,6 +38,7 @@ let searchRequestId = 0;
 let searchDebounce;
 let paneResizeState = null;
 let paneResizeGuide = null;
+let tabRenameState = null;
 
 function loadAppSettings() {
   const defaults = {
@@ -87,6 +88,17 @@ function makeTabState(initialInput = '') {
     hideEditorForLargeFile: false,
     interactionPath: null
   };
+}
+
+function defaultTabTitle(tabId) {
+  return `Tab ${tabId}`;
+}
+
+function normalizeTabTitle(rawTitle, fallbackTitle) {
+  const trimmed = String(rawTitle ?? '')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return trimmed || fallbackTitle;
 }
 
 function countLines(text) {
@@ -1634,6 +1646,48 @@ function updateLineNumbers(text) {
   renderedLineNumberCount = lineCount;
 }
 
+function focusTabRenameInput(tabId) {
+  requestAnimationFrame(() => {
+    const input = tabsBar ? tabsBar.querySelector(`.tab-rename-input[data-tab-id='${CSS.escape(String(tabId))}']`) : null;
+    if (!(input instanceof HTMLInputElement)) {
+      return;
+    }
+    input.focus();
+    input.select();
+  });
+}
+
+function startTabRename(tabId) {
+  const tab = tabs.find((entry) => entry.id === tabId);
+  if (!tab) {
+    return;
+  }
+  tabRenameState = {
+    tabId,
+    draft: tab.title
+  };
+  renderTabBar();
+  focusTabRenameInput(tabId);
+}
+
+function cancelTabRename() {
+  if (!tabRenameState) {
+    return;
+  }
+  tabRenameState = null;
+  renderTabBar();
+}
+
+function commitTabRename(tabId, nextTitle) {
+  const tab = tabs.find((entry) => entry.id === tabId);
+  if (!tab) {
+    return;
+  }
+  tab.title = normalizeTabTitle(nextTitle, tab.title || defaultTabTitle(tab.id));
+  tabRenameState = null;
+  renderTabBar();
+}
+
 function renderTabBar() {
   if (!tabsBar) {
     return;
@@ -1646,11 +1700,54 @@ function renderTabBar() {
     tabButton.type = 'button';
     tabButton.className = `tab-btn${tab.id === activeTabId ? ' active' : ''}`;
     tabButton.dataset.tabId = String(tab.id);
+    const isRenaming = Boolean(tabRenameState && tabRenameState.tabId === tab.id);
 
-    const label = document.createElement('span');
-    label.textContent = tab.title;
-
-    tabButton.appendChild(label);
+    if (isRenaming) {
+      const renameInput = document.createElement('input');
+      renameInput.type = 'text';
+      renameInput.className = 'tab-rename-input';
+      renameInput.dataset.tabId = String(tab.id);
+      renameInput.value = tabRenameState ? tabRenameState.draft : tab.title;
+      renameInput.setAttribute('aria-label', `Rename ${tab.title}`);
+      renameInput.addEventListener('click', (event) => {
+        event.stopPropagation();
+      });
+      renameInput.addEventListener('dblclick', (event) => {
+        event.stopPropagation();
+      });
+      renameInput.addEventListener('contextmenu', (event) => {
+        event.stopPropagation();
+      });
+      renameInput.addEventListener('input', (event) => {
+        if (!tabRenameState || tabRenameState.tabId !== tab.id) {
+          return;
+        }
+        tabRenameState.draft = event.target.value;
+      });
+      renameInput.addEventListener('keydown', (event) => {
+        if (event.key === 'Enter') {
+          event.preventDefault();
+          commitTabRename(tab.id, renameInput.value);
+          return;
+        }
+        if (event.key === 'Escape') {
+          event.preventDefault();
+          cancelTabRename();
+        }
+      });
+      renameInput.addEventListener('blur', () => {
+        if (!tabRenameState || tabRenameState.tabId !== tab.id) {
+          return;
+        }
+        commitTabRename(tab.id, renameInput.value);
+      });
+      tabButton.appendChild(renameInput);
+    } else {
+      const label = document.createElement('span');
+      label.className = 'tab-title';
+      label.textContent = tab.title;
+      tabButton.appendChild(label);
+    }
 
     if (tabs.length > 1) {
       const closeButton = document.createElement('button');
@@ -1666,7 +1763,26 @@ function renderTabBar() {
     }
 
     tabButton.addEventListener('click', () => {
+      if (tabRenameState && tabRenameState.tabId === tab.id) {
+        return;
+      }
       switchTab(tab.id);
+    });
+    tabButton.addEventListener('dblclick', (event) => {
+      if (event.target.closest('.tab-close')) {
+        return;
+      }
+      event.preventDefault();
+      event.stopPropagation();
+      startTabRename(tab.id);
+    });
+    tabButton.addEventListener('contextmenu', (event) => {
+      if (event.target.closest('.tab-close')) {
+        return;
+      }
+      event.preventDefault();
+      event.stopPropagation();
+      startTabRename(tab.id);
     });
 
     tabsBar.appendChild(tabButton);
@@ -1712,6 +1828,7 @@ function hydrateActiveTab() {
 }
 
 function switchTab(id) {
+  tabRenameState = null;
   activeTabId = id;
   renderTabBar();
   hydrateActiveTab();
@@ -1725,6 +1842,9 @@ function addTab(initialInput = '') {
 }
 
 function closeTab(id) {
+  if (tabRenameState && tabRenameState.tabId === id) {
+    tabRenameState = null;
+  }
   const index = tabs.findIndex((tab) => tab.id === id);
   if (index === -1) {
     return;
