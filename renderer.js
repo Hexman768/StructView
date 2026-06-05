@@ -39,6 +39,7 @@ let searchDebounce;
 let paneResizeState = null;
 let paneResizeGuide = null;
 let tabRenameState = null;
+let renderedTreeTabId = null;
 
 function loadAppSettings() {
   const defaults = {
@@ -60,6 +61,10 @@ function loadAppSettings() {
 
 function currentTab() {
   return tabs.find((tab) => tab.id === activeTabId) || null;
+}
+
+function getTabById(tabId) {
+  return tabs.find((tab) => tab.id === tabId) || null;
 }
 
 function makeTabState(initialInput = '') {
@@ -708,19 +713,47 @@ function getArrayItemLabel(item) {
   return 'item';
 }
 
-function captureExpandedPaths() {
-  const tab = currentTab();
-  if (!tab) {
+function captureExpandedPaths(tab = null) {
+  const targetTab = tab || getTabById(renderedTreeTabId) || currentTab();
+  if (!targetTab) {
+    return;
+  }
+
+  if (renderedTreeTabId === null && !tab) {
+    return;
+  }
+
+  const detailsNodes = treeRoot.querySelectorAll('details[data-node-path]');
+  if (detailsNodes.length === 0) {
+    targetTab.expandedPaths = new Set();
     return;
   }
 
   const next = new Set();
-  treeRoot.querySelectorAll('details[data-node-path]').forEach((details) => {
+  detailsNodes.forEach((details) => {
     if (details.open) {
       next.add(details.dataset.nodePath);
     }
   });
-  tab.expandedPaths = next;
+  targetTab.expandedPaths = next;
+}
+
+function clearRenderedTree() {
+  treeRoot.innerHTML = '';
+  renderedTreeTabId = activeTabId;
+}
+
+function setRenderedTreeContent(tabId, content) {
+  treeRoot.innerHTML = '';
+  if (content) {
+    treeRoot.appendChild(content);
+  }
+  renderedTreeTabId = tabId;
+}
+
+function showTreePlaceholder(html) {
+  treeRoot.innerHTML = html;
+  renderedTreeTabId = activeTabId;
 }
 
 function encodePath(path) {
@@ -963,6 +996,377 @@ function renamePathKeyIfNeeded(path, nextKeyRaw) {
   const nextPath = [...path];
   nextPath[nextPath.length - 1] = newKey;
   return nextPath;
+}
+
+function getDefaultOpenDepth() {
+  const tab = currentTab();
+  return tab && isLargeInputText(tab.input) ? 1 : 2;
+}
+
+function createPrimitiveNodeShell(label, value, query, path, indexMeta = '') {
+  const pathToken = encodePath(path);
+  const wrapper = document.createElement('div');
+  wrapper.className = 'node primitive-row';
+  wrapper.dataset.nodePath = pathToken;
+
+  const content = document.createElement('div');
+  content.className = 'primitive';
+
+  if (path.length > 0) {
+    const dragHandle = document.createElement('span');
+    dragHandle.className = 'node-drag-handle';
+    dragHandle.textContent = '::';
+    dragHandle.draggable = true;
+    dragHandle.dataset.dragSourcePath = pathToken;
+    dragHandle.title = 'Drag to move this node';
+    content.appendChild(dragHandle);
+  }
+
+  if (indexMeta) {
+    const indexBadge = document.createElement('span');
+    indexBadge.className = 'node-meta';
+    indexBadge.textContent = indexMeta;
+    content.appendChild(indexBadge);
+  }
+
+  const key = document.createElement('span');
+  key.className = 'node-key';
+  key.textContent = label;
+  if (query && containsQuery(query, label)) {
+    key.classList.add('match-hit');
+  }
+
+  const type = document.createElement('span');
+  type.className = 'node-type';
+  type.textContent = nodeType(value);
+
+  const primitiveValue = document.createElement('span');
+  primitiveValue.className = 'primitive-value';
+  const primitiveText = formatPrimitive(value);
+  primitiveValue.textContent = primitiveText;
+  if (query && containsQuery(query, primitiveText)) {
+    primitiveValue.classList.add('match-hit');
+  }
+
+  const editButton = document.createElement('button');
+  editButton.type = 'button';
+  editButton.className = 'node-edit-btn';
+  editButton.textContent = 'Edit';
+  editButton.dataset.editPath = pathToken;
+  editButton.draggable = false;
+
+  const editor = document.createElement('div');
+  editor.className = 'node-inline-editor';
+  editor.dataset.editorPath = pathToken;
+  editor.dataset.editorMode = 'primitive';
+
+  const keyInput = document.createElement('input');
+  keyInput.type = 'text';
+  keyInput.className = 'node-inline-input node-inline-key';
+  keyInput.value = label;
+  keyInput.disabled = !canRenamePath(path);
+
+  const valueInput = document.createElement('input');
+  valueInput.type = 'text';
+  valueInput.className = 'node-inline-input node-inline-value';
+  valueInput.value = JSON.stringify(value);
+
+  const saveButton = document.createElement('button');
+  saveButton.type = 'button';
+  saveButton.className = 'node-inline-save';
+  saveButton.textContent = 'Save';
+  saveButton.dataset.savePath = pathToken;
+  saveButton.dataset.saveMode = 'primitive';
+
+  const cancelButton = document.createElement('button');
+  cancelButton.type = 'button';
+  cancelButton.className = 'node-inline-cancel';
+  cancelButton.textContent = 'Cancel';
+  cancelButton.dataset.cancelPath = pathToken;
+
+  editor.append(keyInput, valueInput, saveButton, cancelButton);
+  content.append(key, type, primitiveValue, editButton);
+  wrapper.append(content, editor);
+  return wrapper;
+}
+
+function createBranchNodeShell(label, value, depth, query, path, indexMeta = '') {
+  const tab = currentTab();
+  const pathToken = encodePath(path);
+  const wrapper = document.createElement('div');
+  wrapper.className = 'node';
+  wrapper.dataset.nodePath = pathToken;
+
+  const details = document.createElement('details');
+  details.dataset.nodePath = pathToken;
+  details.open = Boolean(tab && tab.expandedPaths && tab.expandedPaths.has(pathToken)) || depth < getDefaultOpenDepth();
+
+  const summary = document.createElement('summary');
+  summary.className = 'node-summary';
+  summary.dataset.dropTargetPath = pathToken;
+
+  if (path.length > 0) {
+    const dragHandle = document.createElement('span');
+    dragHandle.className = 'node-drag-handle';
+    dragHandle.textContent = '::';
+    dragHandle.draggable = true;
+    dragHandle.dataset.dragSourcePath = pathToken;
+    dragHandle.title = 'Drag to move this node';
+    summary.appendChild(dragHandle);
+  }
+
+  const key = document.createElement('span');
+  key.className = 'node-key';
+  key.textContent = label;
+  if (query && containsQuery(query, label)) {
+    key.classList.add('match-hit');
+  }
+
+  const type = document.createElement('span');
+  type.className = 'node-type';
+  type.textContent = nodeType(value);
+
+  const meta = document.createElement('span');
+  meta.className = 'node-meta';
+  if (Array.isArray(value)) {
+    const countText = `${value.length} item${value.length === 1 ? '' : 's'}`;
+    meta.textContent = indexMeta ? `${indexMeta} • ${countText}` : countText;
+  } else {
+    const size = Object.keys(value).length;
+    const sizeText = `${size} field${size === 1 ? '' : 's'}`;
+    meta.textContent = indexMeta ? `${indexMeta} • ${sizeText}` : sizeText;
+  }
+
+  const branchEdit = document.createElement('button');
+  branchEdit.type = 'button';
+  branchEdit.className = 'node-edit-btn';
+  branchEdit.textContent = 'Edit';
+  branchEdit.dataset.editPath = pathToken;
+  branchEdit.draggable = false;
+
+  const branchEditor = document.createElement('div');
+  branchEditor.className = 'node-inline-editor';
+  branchEditor.dataset.editorPath = pathToken;
+  branchEditor.dataset.editorMode = 'branch';
+
+  const branchKeyInput = document.createElement('input');
+  branchKeyInput.type = 'text';
+  branchKeyInput.className = 'node-inline-input node-inline-key';
+  branchKeyInput.value = label;
+  branchKeyInput.disabled = !canRenamePath(path);
+
+  const branchSave = document.createElement('button');
+  branchSave.type = 'button';
+  branchSave.className = 'node-inline-save';
+  branchSave.textContent = 'Save';
+  branchSave.dataset.savePath = pathToken;
+  branchSave.dataset.saveMode = 'branch';
+
+  const branchCancel = document.createElement('button');
+  branchCancel.type = 'button';
+  branchCancel.className = 'node-inline-cancel';
+  branchCancel.textContent = 'Cancel';
+  branchCancel.dataset.cancelPath = pathToken;
+
+  branchEditor.append(branchKeyInput, branchSave, branchCancel);
+  summary.append(key, type, meta, branchEdit);
+  details.append(summary, branchEditor);
+
+  const childrenWrap = document.createElement('div');
+  childrenWrap.className = 'node-children';
+  childrenWrap.dataset.dropTargetPath = pathToken;
+  details.dataset.childrenBuilt = 'false';
+  details.appendChild(childrenWrap);
+  wrapper.appendChild(details);
+
+  return {
+    wrapper,
+    details,
+    childrenWrap
+  };
+}
+
+function pushChildFrames(stack, value, depth, path, container) {
+  if (Array.isArray(value)) {
+    for (let index = value.length - 1; index >= 0; index -= 1) {
+      const item = value[index];
+      stack.push({
+        label: getArrayItemLabel(item),
+        value: item,
+        depth,
+        path: [...path, index],
+        indexMeta: `index ${index}`,
+        container
+      });
+    }
+    return;
+  }
+
+  const entries = Object.entries(value);
+  for (let index = entries.length - 1; index >= 0; index -= 1) {
+    const [childKey, childValue] = entries[index];
+    stack.push({
+      label: childKey,
+      value: childValue,
+      depth,
+      path: [...path, childKey],
+      indexMeta: '',
+      container
+    });
+  }
+}
+
+function buildVisibleTreeFragment(label, value, depth, query, path, indexMeta = '') {
+  const fragment = document.createDocumentFragment();
+  const stack = [
+    {
+      label,
+      value,
+      depth,
+      path,
+      indexMeta,
+      container: fragment
+    }
+  ];
+
+  while (stack.length > 0) {
+    const frame = stack.pop();
+    const isBranch = isObject(frame.value) || Array.isArray(frame.value);
+
+    if (!isBranch) {
+      frame.container.appendChild(
+        createPrimitiveNodeShell(frame.label, frame.value, query, frame.path, frame.indexMeta)
+      );
+      continue;
+    }
+
+    const branch = createBranchNodeShell(frame.label, frame.value, frame.depth, query, frame.path, frame.indexMeta);
+    frame.container.appendChild(branch.wrapper);
+
+    if (branch.details.open) {
+      branch.details.dataset.childrenBuilt = 'true';
+      pushChildFrames(stack, frame.value, frame.depth + 1, frame.path, branch.childrenWrap);
+    }
+  }
+
+  return fragment;
+}
+
+function buildVisibleChildrenFragment(value, depth, query, path) {
+  const fragment = document.createDocumentFragment();
+  const stack = [];
+  pushChildFrames(stack, value, depth, path, fragment);
+
+  while (stack.length > 0) {
+    const frame = stack.pop();
+    const isBranch = isObject(frame.value) || Array.isArray(frame.value);
+
+    if (!isBranch) {
+      frame.container.appendChild(
+        createPrimitiveNodeShell(frame.label, frame.value, query, frame.path, frame.indexMeta)
+      );
+      continue;
+    }
+
+    const branch = createBranchNodeShell(frame.label, frame.value, frame.depth, query, frame.path, frame.indexMeta);
+    frame.container.appendChild(branch.wrapper);
+
+    if (branch.details.open) {
+      branch.details.dataset.childrenBuilt = 'true';
+      pushChildFrames(stack, frame.value, frame.depth + 1, frame.path, branch.childrenWrap);
+    }
+  }
+
+  return fragment;
+}
+
+function populateBranchChildren(detailsEl) {
+  if (!(detailsEl instanceof HTMLDetailsElement) || detailsEl.dataset.childrenBuilt === 'true') {
+    return;
+  }
+
+  const tab = currentTab();
+  if (!tab || tab.parsedData === null) {
+    return;
+  }
+
+  const path = decodePath(detailsEl.dataset.nodePath || '');
+  if (!path) {
+    return;
+  }
+
+  const node = getNodeAtPath(tab.parsedData, path);
+  if (!isObject(node) && !Array.isArray(node)) {
+    return;
+  }
+
+  const childrenWrap = detailsEl.querySelector('.node-children');
+  if (!childrenWrap) {
+    return;
+  }
+
+  const depth = path.length + 1;
+  const query = (tab.search || '').trim().toLowerCase();
+  childrenWrap.appendChild(buildVisibleChildrenFragment(node, depth, query, path));
+  detailsEl.dataset.childrenBuilt = 'true';
+}
+
+function findSyncMatches(root, query, limit = 2000) {
+  const normalized = String(query || '').trim().toLowerCase();
+  if (!normalized) {
+    return [];
+  }
+
+  const matches = [];
+  const seen = new Set();
+  const stack = [{ value: root, path: [] }];
+
+  while (stack.length > 0 && matches.length < limit) {
+    const frame = stack.pop();
+
+    if (Array.isArray(frame.value)) {
+      for (let index = frame.value.length - 1; index >= 0; index -= 1) {
+        stack.push({
+          value: frame.value[index],
+          path: [...frame.path, index]
+        });
+      }
+      continue;
+    }
+
+    if (isObject(frame.value)) {
+      const entries = Object.entries(frame.value);
+      for (let index = entries.length - 1; index >= 0; index -= 1) {
+        const [key, childValue] = entries[index];
+        const childPath = [...frame.path, key];
+        if (containsQuery(normalized, key)) {
+          const token = encodePath(childPath);
+          if (!seen.has(token)) {
+            seen.add(token);
+            matches.push({ path: childPath, target: 'key' });
+            if (matches.length >= limit) {
+              break;
+            }
+          }
+        }
+        stack.push({
+          value: childValue,
+          path: childPath
+        });
+      }
+      continue;
+    }
+
+    if (containsQuery(normalized, formatPrimitive(frame.value))) {
+      const token = encodePath(frame.path);
+      if (!seen.has(token)) {
+        seen.add(token);
+        matches.push({ path: frame.path, target: 'value' });
+      }
+    }
+  }
+
+  return matches;
 }
 
 function createPrimitiveNode(label, value, query, matches, path, indexMeta = '') {
@@ -1279,6 +1683,7 @@ function focusPathMatch(match, scroll = true) {
     const details = treeRoot.querySelector(selector);
     if (details) {
       details.open = true;
+      populateBranchChildren(details);
     }
   }
 
@@ -1323,13 +1728,8 @@ function setActiveMatch(index, query, scroll = true) {
     const match = tab.asyncSearchResults[normalizedIndex];
     focusPathMatch(match, scroll);
   } else {
-    const matchEl = tab.matches[normalizedIndex];
-    matchEl.classList.add('active-match');
-    openDetailsPathForMatch(matchEl);
-    updateInteractionPathFromTarget(matchEl);
-    if (scroll) {
-      matchEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
-    }
+    const match = tab.matches[normalizedIndex];
+    focusPathMatch(match, scroll);
   }
 
   searchStatus.textContent = `${tab.activeMatchIndex + 1} / ${totalMatches} match${totalMatches === 1 ? '' : 'es'} for "${query}".`;
@@ -1350,12 +1750,10 @@ function renderStructure(data, query = '', jumpToMatch = false, focusNextButton 
   }
 
   captureExpandedPaths();
-  treeRoot.innerHTML = '';
 
   const normalizedQuery = query.trim().toLowerCase();
-  const matches = [];
-  const rootNode = createTreeNode('root', data, 0, normalizedQuery, matches, []);
-  treeRoot.appendChild(rootNode);
+  const matches = normalizedQuery ? findSyncMatches(data, normalizedQuery) : [];
+  setRenderedTreeContent(tab.id, buildVisibleTreeFragment('root', data, 0, normalizedQuery, []));
 
   tab.asyncSearchMode = false;
   tab.asyncSearchResults = [];
@@ -1498,7 +1896,7 @@ async function parseAndRender(focusNextButton = false) {
   const source = tab.input;
 
   if (!focusNextButton && isLargeInputText(source)) {
-    setStatus('Large file edit mode: parsing paused while typing. Click "Generate Structure" to refresh.', 'neutral');
+    setStatus('Input changed. Click "Generate Structure" to refresh.', 'neutral');
     return;
   }
 
@@ -1518,7 +1916,7 @@ async function parseAndRender(focusNextButton = false) {
       tab.asyncSearchResults = [];
       tab.activeMatchIndex = -1;
       setStatus(parsed.error, 'error');
-      treeRoot.innerHTML = '<p class="node-meta">Structure will appear here after successful parsing.</p>';
+      showTreePlaceholder('<p class="node-meta">Structure will appear here after successful parsing.</p>');
       if (searchStatus) {
         searchStatus.textContent = 'Showing full structure.';
       }
@@ -1550,7 +1948,7 @@ async function parseAndRender(focusNextButton = false) {
     tab.activeMatchIndex = -1;
     const message = error instanceof Error ? error.message : String(error);
     setStatus(`Render failed: ${message}`, 'error');
-    treeRoot.innerHTML = '<p class="node-meta">Structure rendering failed. Check input and try again.</p>';
+    showTreePlaceholder('<p class="node-meta">Structure rendering failed. Check input and try again.</p>');
     if (searchStatus) {
       searchStatus.textContent = 'Showing full structure.';
     }
@@ -1605,20 +2003,6 @@ function loadOpenedFile(payload) {
 function syncHighlight() {
   const tab = currentTab();
   const text = tab ? tab.input : '';
-  const plainTextMode = isLargeInputText(text);
-  if (editorWrap) {
-    editorWrap.classList.toggle('plain-text-mode', plainTextMode);
-  }
-  if (plainTextMode) {
-    updateLineNumbers(text);
-    highlightLayer.textContent = '\n';
-    if (lineNumberLayer) {
-      lineNumberLayer.scrollTop = inputBox.scrollTop;
-    }
-    highlightLayer.scrollTop = inputBox.scrollTop;
-    highlightLayer.scrollLeft = inputBox.scrollLeft;
-    return;
-  }
   updateLineNumbers(text);
   highlightLayer.innerHTML = `${highlightInput(text)}\n`;
   if (lineNumberLayer) {
@@ -1819,7 +2203,7 @@ function hydrateActiveTab() {
       }
     }
   } else {
-    treeRoot.innerHTML = '<p class="node-meta">Structure will appear here after successful parsing.</p>';
+    showTreePlaceholder('<p class="node-meta">Structure will appear here after successful parsing.</p>');
     if (searchStatus) {
       searchStatus.textContent = tab.search.trim() ? `No matches for "${tab.search.trim()}".` : 'Showing full structure.';
     }
@@ -1828,6 +2212,7 @@ function hydrateActiveTab() {
 }
 
 function switchTab(id) {
+  captureExpandedPaths();
   tabRenameState = null;
   activeTabId = id;
   renderTabBar();
@@ -1842,6 +2227,7 @@ function addTab(initialInput = '') {
 }
 
 function closeTab(id) {
+  captureExpandedPaths();
   if (tabRenameState && tabRenameState.tabId === id) {
     tabRenameState = null;
   }
@@ -1867,9 +2253,99 @@ function closeTab(id) {
 }
 
 function handleEditClick(event) {
-  const button = event.target.closest('.node-edit-btn');
+  const cancelButton = event.target.closest('.node-inline-cancel[data-cancel-path]');
+  if (cancelButton) {
+    const editor = cancelButton.closest('.node-inline-editor');
+    if (editor) {
+      editor.classList.remove('visible');
+    }
+    return;
+  }
+
+  const saveButton = event.target.closest('.node-inline-save[data-save-path]');
+  if (saveButton) {
+    event.preventDefault();
+    event.stopPropagation();
+
+    const path = decodePath(saveButton.dataset.savePath || '');
+    const saveMode = saveButton.dataset.saveMode || 'primitive';
+    const editor = saveButton.closest('.node-inline-editor');
+    const tab = currentTab();
+    if (!tab || !editor || !path || tab.parsedData === null) {
+      return;
+    }
+
+    try {
+      const keyInput = editor.querySelector('.node-inline-key');
+      let nextPath = path;
+      if (keyInput instanceof HTMLInputElement) {
+        nextPath = renamePathKeyIfNeeded(path, keyInput.value);
+      }
+
+      if (saveMode === 'primitive') {
+        const previousValue = getNodeAtPath(tab.parsedData, path);
+        const valueInput = editor.querySelector('.node-inline-value');
+        if (!(valueInput instanceof HTMLInputElement)) {
+          return;
+        }
+        const parsedValue = parseEditableValue(valueInput.value, previousValue);
+        tab.parsedData = setNodeAtPath(tab.parsedData, nextPath, parsedValue);
+        setInteractionPath(nextPath);
+        applyStructureChange('Updated element from Structure View.');
+        return;
+      }
+
+      setInteractionPath(nextPath);
+      applyStructureChange('Renamed element from Structure View.');
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setStatus(`Edit failed: ${message}`, 'error');
+    }
+    return;
+  }
+
+  const button = event.target.closest('.node-edit-btn[data-edit-path]');
   if (!button) {
     return;
+  }
+
+  event.preventDefault();
+  event.stopPropagation();
+
+  const editPath = decodePath(button.dataset.editPath || '');
+  if (editPath) {
+    setInteractionPath(editPath);
+  }
+
+  const host = button.closest('[data-node-path]');
+  if (!host) {
+    return;
+  }
+
+  treeRoot.querySelectorAll('.node-inline-editor.visible').forEach((editor) => {
+    if (!host.contains(editor)) {
+      editor.classList.remove('visible');
+    }
+  });
+
+  const details = host.querySelector('details[data-node-path]');
+  if (details) {
+    details.open = true;
+    populateBranchChildren(details);
+  }
+
+  const editor = host.querySelector('.node-inline-editor');
+  if (!editor) {
+    return;
+  }
+
+  editor.classList.toggle('visible');
+  if (editor.classList.contains('visible')) {
+    const primaryInput = editor.querySelector('.node-inline-value, .node-inline-key');
+    if (primaryInput instanceof HTMLInputElement) {
+      primaryInput.focus();
+      primaryInput.select();
+    }
   }
 }
 
@@ -2048,6 +2524,7 @@ treeRoot.addEventListener(
     }
     if (event.target.open) {
       tab.expandedPaths.add(pathToken);
+      populateBranchChildren(event.target);
     } else {
       tab.expandedPaths.delete(pathToken);
     }
@@ -2085,7 +2562,7 @@ inputBox.addEventListener('input', () => {
 
   clearTimeout(parseDebounce);
   if (isLargeInputText(tab.input)) {
-    setStatus('Large file edit mode: parsing paused while typing. Click "Generate Structure" to refresh.', 'neutral');
+    setStatus('Input changed. Click "Generate Structure" to refresh.', 'neutral');
     return;
   }
   parseDebounce = setTimeout(() => {
@@ -2151,7 +2628,7 @@ if (clearTextButton) {
     syncHighlight();
     applyPaneVisibility(tab);
     updateSaveButton(tab);
-    treeRoot.innerHTML = '<p class="node-meta">Structure will appear here after successful parsing.</p>';
+    showTreePlaceholder('<p class="node-meta">Structure will appear here after successful parsing.</p>');
     if (searchStatus) {
       searchStatus.textContent = tab.search.trim() ? `No matches for "${tab.search.trim()}".` : 'Showing full structure.';
     }
