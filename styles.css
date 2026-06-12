@@ -354,6 +354,10 @@ body.resizing-panes .layout {
   overflow: auto;
 }
 
+.editor-wrap.typing-highlight-pending .highlight-layer {
+  visibility: hidden;
+}
+
 .input-box {
   position: absolute;
   inset: 0;
@@ -362,6 +366,10 @@ body.resizing-panes .layout {
   color: transparent;
   caret-color: #ffffff;
   overflow: auto;
+}
+
+.editor-wrap.typing-highlight-pending .input-box {
+  color: #d7e8f9;
 }
 
 .status {
