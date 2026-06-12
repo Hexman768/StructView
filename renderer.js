@@ -26,8 +26,10 @@ const LARGE_FILE_HIDE_INPUT_LINE_THRESHOLD = 10000;
 const LARGE_EDIT_CHAR_THRESHOLD = 200000;
 const MOBILE_LAYOUT_BREAKPOINT = 980;
 const MIN_PANE_WIDTH_PX = 280;
+const HIGHLIGHT_IDLE_DELAY_MS = 120;
 
 let parseDebounce;
+let highlightDebounce;
 let nextTabId = 1;
 const tabs = [];
 let activeTabId = null;
@@ -65,6 +67,16 @@ function currentTab() {
 
 function getTabById(tabId) {
   return tabs.find((tab) => tab.id === tabId) || null;
+}
+
+function persistActiveTabInput() {
+  const tab = currentTab();
+  if (!tab || !inputBox) {
+    return;
+  }
+
+  tab.input = inputBox.value;
+  refreshDirtyState(tab);
 }
 
 function makeTabState(initialInput = '') {
@@ -118,16 +130,6 @@ function countLines(text) {
     }
   }
   return lines;
-}
-
-function isLargeInputText(text) {
-  if (typeof text !== 'string') {
-    return false;
-  }
-  if (text.length >= LARGE_EDIT_CHAR_THRESHOLD) {
-    return true;
-  }
-  return countLines(text) >= LARGE_FILE_HIDE_INPUT_LINE_THRESHOLD;
 }
 
 function shouldHideEditor(tab) {
@@ -1000,7 +1002,7 @@ function renamePathKeyIfNeeded(path, nextKeyRaw) {
 
 function getDefaultOpenDepth() {
   const tab = currentTab();
-  return tab && isLargeInputText(tab.input) ? 1 : 2;
+  return tab ? 1 : 2;
 }
 
 function createPrimitiveNodeShell(label, value, query, path, indexMeta = '') {
@@ -1811,7 +1813,7 @@ async function parseSource(source) {
 }
 
 function shouldUseAsyncSearch(tab) {
-  return Boolean(tab && tab.parsedData !== null && isLargeInputText(tab.input));
+  return Boolean(tab && tab.parsedData !== null);
 }
 
 async function runAsyncSearch(query, focusNextButton = false) {
@@ -1895,7 +1897,7 @@ async function parseAndRender(focusNextButton = false) {
   const requestId = ++parseRequestId;
   const source = tab.input;
 
-  if (!focusNextButton && isLargeInputText(source)) {
+  if (!focusNextButton) { // stops automatic generation
     setStatus('Input changed. Click "Generate Structure" to refresh.', 'neutral');
     return;
   }
@@ -1997,10 +1999,14 @@ function loadOpenedFile(payload) {
   updateBeautifyVisibility(tab);
   updateSaveButton(tab);
   renderInteractionBreadcrumb(tab);
-  parseAndRender(false);
+  parseAndRender(true);
 }
 
 function syncHighlight() {
+  clearTimeout(highlightDebounce);
+  if (editorWrap) {
+    editorWrap.classList.remove('typing-highlight-pending');
+  }
   const tab = currentTab();
   const text = tab ? tab.input : '';
   updateLineNumbers(text);
@@ -2010,6 +2016,16 @@ function syncHighlight() {
   }
   highlightLayer.scrollTop = inputBox.scrollTop;
   highlightLayer.scrollLeft = inputBox.scrollLeft;
+}
+
+function scheduleHighlightSync() {
+  if (editorWrap) {
+    editorWrap.classList.add('typing-highlight-pending');
+  }
+  clearTimeout(highlightDebounce);
+  highlightDebounce = setTimeout(() => {
+    syncHighlight();
+  }, HIGHLIGHT_IDLE_DELAY_MS);
 }
 
 function updateLineNumbers(text) {
@@ -2212,6 +2228,8 @@ function hydrateActiveTab() {
 }
 
 function switchTab(id) {
+  clearTimeout(parseDebounce);
+  persistActiveTabInput();
   captureExpandedPaths();
   tabRenameState = null;
   activeTabId = id;
@@ -2227,6 +2245,8 @@ function addTab(initialInput = '') {
 }
 
 function closeTab(id) {
+  clearTimeout(parseDebounce);
+  persistActiveTabInput();
   captureExpandedPaths();
   if (tabRenameState && tabRenameState.tabId === id) {
     tabRenameState = null;
@@ -2555,16 +2575,13 @@ inputBox.addEventListener('input', () => {
   tab.input = inputBox.value;
   tab.asyncSearchMode = false;
   tab.asyncSearchResults = [];
-  refreshDirtyState(tab);
-  updateSaveButton(tab);
-  applyPaneVisibility(tab);
-  syncHighlight();
+  if (!tab.dirty) {
+    tab.dirty = true;
+    updateSaveButton(tab);
+  }
+  scheduleHighlightSync();
 
   clearTimeout(parseDebounce);
-  if (isLargeInputText(tab.input)) {
-    setStatus('Input changed. Click "Generate Structure" to refresh.', 'neutral');
-    return;
-  }
   parseDebounce = setTimeout(() => {
     parseAndRender(false);
   }, 250);
@@ -2768,6 +2785,15 @@ if (searchNextButton) {
 }
 
 inputBox.addEventListener('keydown', (event) => {
+  if (event.key === 'Tab' && !event.ctrlKey && !event.metaKey && !event.altKey) {
+    event.preventDefault();
+    const start = inputBox.selectionStart ?? 0;
+    const end = inputBox.selectionEnd ?? start;
+    inputBox.setRangeText('\t', start, end, 'end');
+    inputBox.dispatchEvent(new Event('input', { bubbles: true }));
+    return;
+  }
+
   if ((event.ctrlKey || event.metaKey) && event.key === 'Enter') {
     event.preventDefault();
     parseAndRender(true);
