@@ -578,7 +578,7 @@ function beautifyCurrentTab() {
   applyPaneVisibility(tab);
   updateBeautifyVisibility(tab);
   setStatus('Beautified JSON with 4-space indentation.', 'success');
-  parseAndRender(true);
+  parseAndRender({ auto: true });
 }
 
 function setStatus(message, type = 'neutral') {
@@ -1888,22 +1888,33 @@ async function runAsyncSearch(query, focusNextButton = false) {
   }
 }
 
-async function parseAndRender(focusNextButton = false) {
+async function parseAndRender(options = false) {
   const tab = currentTab();
   if (!tab) {
     return;
   }
 
+  const config =
+    typeof options === 'object' && options !== null
+      ? {
+          auto: Boolean(options.auto),
+          focusNextButton: Boolean(options.focusNextButton)
+        }
+      : {
+          auto: false,
+          focusNextButton: Boolean(options)
+        };
+
   const requestId = ++parseRequestId;
   const source = tab.input;
 
-  if (!focusNextButton) { // stops automatic generation
+  if (!config.auto && !config.focusNextButton) {
     setStatus('Input changed. Click "Generate Structure" to refresh.', 'neutral');
     return;
   }
 
   try {
-    if (!focusNextButton) {
+    if (config.auto && !config.focusNextButton) {
       setStatus('Parsing input...', 'neutral');
     }
     const parsed = await parseSource(source);
@@ -1934,12 +1945,12 @@ async function parseAndRender(focusNextButton = false) {
     tab.parseFallback = Boolean(parsed.fallback);
     if (tab.search.trim() && shouldUseAsyncSearch(tab)) {
       renderStructure(parsed.data, '', false, false);
-      await runAsyncSearch(tab.search, focusNextButton && Boolean(tab.search.trim()));
+      await runAsyncSearch(tab.search, config.focusNextButton && Boolean(tab.search.trim()));
       setStatus(`Parsed as ${parsed.format}. Expand any box to inspect nested values.`, 'success');
       applyPaneVisibility(tab);
       return;
     }
-    renderStructure(parsed.data, tab.search, true, focusNextButton && Boolean(tab.search.trim()));
+    renderStructure(parsed.data, tab.search, true, config.focusNextButton && Boolean(tab.search.trim()));
     setStatus(`Parsed as ${parsed.format}. Expand any box to inspect nested values.`, 'success');
     applyPaneVisibility(tab);
   } catch (error) {
@@ -1999,7 +2010,7 @@ function loadOpenedFile(payload) {
   updateBeautifyVisibility(tab);
   updateSaveButton(tab);
   renderInteractionBreadcrumb(tab);
-  parseAndRender(true);
+  parseAndRender({ auto: true });
 }
 
 function syncHighlight() {
@@ -2566,7 +2577,7 @@ if (nodeBreadcrumb) {
   });
 }
 
-inputBox.addEventListener('input', () => {
+inputBox.addEventListener('input', (event) => {
   const tab = currentTab();
   if (!tab) {
     return;
@@ -2582,9 +2593,16 @@ inputBox.addEventListener('input', () => {
   scheduleHighlightSync();
 
   clearTimeout(parseDebounce);
+  const shouldAutoParse =
+    event instanceof InputEvent &&
+    (event.inputType === 'insertFromPaste' || event.inputType === 'insertFromDrop');
   parseDebounce = setTimeout(() => {
+    if (shouldAutoParse) {
+      parseAndRender({ auto: true });
+      return;
+    }
     parseAndRender(false);
-  }, 250);
+  }, shouldAutoParse ? 150 : 250);
 });
 
 inputBox.addEventListener('scroll', () => {
