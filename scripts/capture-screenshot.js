@@ -68,14 +68,17 @@ async function createScreenshot() {
   await win.loadFile(indexPath);
 
   await win.webContents.executeJavaScript(`
-    (() => {
+    (async () => {
       const json = ${JSON.stringify(JSON.stringify(exampleJson, null, 2))};
-      const input = document.getElementById('input-box');
-      const renderBtn = document.getElementById('render-btn') || document.getElementById('generate-btn');
-      if (input) {
-        input.value = json;
-        input.dispatchEvent(new Event('input', { bubbles: true }));
+      const { EditorView } = await import('@codemirror/view');
+      const editor = document.querySelector('.cm-editor');
+      const editorView = editor ? EditorView.findFromDOM(editor) : null;
+      if (editorView) {
+        editorView.dispatch({
+          changes: { from: 0, to: editorView.state.doc.length, insert: json }
+        });
       }
+      const renderBtn = document.getElementById('render-btn') || document.getElementById('generate-btn');
       if (renderBtn) {
         renderBtn.click();
       }

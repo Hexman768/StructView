@@ -321,54 +321,73 @@ body.resizing-panes .layout {
   background: #06101a;
 }
 
-.line-number-layer,
-.highlight-layer,
-.input-box {
-  margin: 0;
-  border: none;
+.input-editor,
+.input-editor .cm-editor {
   width: 100%;
-  min-height: 100%;
-  padding: 0.9rem 0.9rem 0.9rem calc(0.9rem + var(--line-gutter-width));
-  font: 500 13px/1.55 "JetBrains Mono", "Fira Code", "SFMono-Regular", Menlo, Consolas, monospace;
-  tab-size: 2;
-  white-space: pre;
+  height: 100%;
 }
 
-.line-number-layer {
-  position: absolute;
-  inset: 0;
-  padding: 0.9rem 0.45rem 0.9rem 0.2rem;
-  width: var(--line-gutter-width);
-  border-right: 1px solid #1c3349;
-  text-align: right;
-  color: #6f8ea6;
-  pointer-events: none;
-  overflow: hidden;
-}
-
-.highlight-layer {
-  position: absolute;
-  inset: 0;
-  pointer-events: none;
+.input-editor .cm-editor {
   color: #d7e8f9;
+  background: #06101a;
+  font: 500 13px/1.55 "JetBrains Mono", "Fira Code", "SFMono-Regular", Menlo, Consolas, monospace;
+}
+
+.input-editor .cm-editor.cm-focused {
+  outline: none;
+}
+
+.input-editor .cm-scroller {
   overflow: auto;
+  font-family: inherit;
+  line-height: inherit;
 }
 
-.editor-wrap.typing-highlight-pending .highlight-layer {
-  visibility: hidden;
-}
-
-.input-box {
-  position: absolute;
-  inset: 0;
-  resize: none;
-  background: transparent;
-  color: transparent;
+.input-editor .cm-content {
+  padding: 0.9rem 0;
   caret-color: #ffffff;
-  overflow: auto;
+  tab-size: 2;
 }
 
-.editor-wrap.typing-highlight-pending .input-box {
+.input-editor .cm-line {
+  padding: 0 0.9rem;
+}
+
+.input-editor .cm-gutters {
+  min-width: var(--line-gutter-width);
+  border-right: 1px solid #1c3349;
+  background: #06101a;
+  color: #6f8ea6;
+}
+
+.input-editor .cm-gutterElement {
+  padding: 0 0.55rem 0 0.35rem;
+}
+
+.input-editor .cm-activeLine,
+.input-editor .cm-activeLineGutter {
+  background: rgba(51, 117, 170, 0.12);
+}
+
+.input-editor .cm-selectionBackground,
+.input-editor .cm-content ::selection {
+  background: rgba(72, 139, 196, 0.48) !important;
+}
+
+.input-editor .cm-cursor,
+.input-editor .cm-dropCursor {
+  border-left-color: #ffffff;
+}
+
+.input-editor .cm-panels {
+  border-color: #274869;
+  background: #0b1b2b;
+  color: #d7e8f9;
+}
+
+.input-editor .cm-tooltip {
+  border-color: #274869;
+  background: #0b1b2b;
   color: #d7e8f9;
 }
 

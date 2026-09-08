@@ -5,6 +5,31 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>StructView</title>
     <link rel="stylesheet" href="styles.css" />
+    <script type="importmap">
+      {
+        "imports": {
+          "codemirror": "./vendor/codemirror/codemirror.mjs",
+          "@codemirror/autocomplete": "./vendor/codemirror/autocomplete.mjs",
+          "@codemirror/commands": "./vendor/codemirror/commands.mjs",
+          "@codemirror/language": "./vendor/codemirror/language.mjs",
+          "@codemirror/lint": "./vendor/codemirror/lint.mjs",
+          "@codemirror/search": "./vendor/codemirror/search.mjs",
+          "@codemirror/state": "./vendor/codemirror/state.mjs",
+          "@codemirror/view": "./vendor/codemirror/view.mjs",
+          "@codemirror/lang-json": "./vendor/codemirror/lang-json.mjs",
+          "@codemirror/lang-yaml": "./vendor/codemirror/lang-yaml.mjs",
+          "@lezer/common": "./vendor/codemirror/lezer-common.mjs",
+          "@lezer/highlight": "./vendor/codemirror/lezer-highlight.mjs",
+          "@lezer/lr": "./vendor/codemirror/lezer-lr.mjs",
+          "@lezer/json": "./vendor/codemirror/lezer-json.mjs",
+          "@lezer/yaml": "./vendor/codemirror/lezer-yaml.mjs",
+          "@marijn/find-cluster-break": "./vendor/codemirror/find-cluster-break.mjs",
+          "crelt": "./vendor/codemirror/crelt.mjs",
+          "style-mod": "./vendor/codemirror/style-mod.mjs",
+          "w3c-keyname": "./vendor/codemirror/w3c-keyname.mjs"
+        }
+      }
+    </script>
   </head>
   <body>
     <header class="app-header">
@@ -42,17 +67,7 @@
         </div>
 
         <div class="editor-wrap" id="editor-wrap">
-          <pre id="line-number-layer" class="line-number-layer" aria-hidden="true"></pre>
-          <pre id="highlight-layer" class="highlight-layer" aria-hidden="true"></pre>
-          <textarea
-            id="input-box"
-            class="input-box"
-            spellcheck="false"
-            autocomplete="off"
-            autocorrect="off"
-            autocapitalize="off"
-            placeholder="Paste JSON or YAML here..."
-          ></textarea>
+          <div id="input-editor" class="input-editor"></div>
         </div>
 
         <p id="status" class="status">Waiting for input...</p>
@@ -93,6 +108,6 @@
       </section>
     </main>
 
-    <script src="renderer.js"></script>
+    <script type="module" src="renderer.js"></script>
   </body>
 </html>

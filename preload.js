@@ -94,5 +94,19 @@ contextBridge.exposeInMainWorld('structViewApi', {
     return () => {
       ipcRenderer.removeListener('menu-save-file-request', listener);
     };
+  },
+  onRequestSelectAll: (handler) => {
+    if (typeof handler !== 'function') {
+      return () => {};
+    }
+
+    const listener = () => {
+      handler();
+    };
+
+    ipcRenderer.on('menu-select-all-request', listener);
+    return () => {
+      ipcRenderer.removeListener('menu-select-all-request', listener);
+    };
   }
 });

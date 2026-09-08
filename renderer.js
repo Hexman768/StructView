@@ -1,8 +1,15 @@
+import { basicSetup, EditorView } from 'codemirror';
+import { Compartment } from '@codemirror/state';
+import { indentWithTab } from '@codemirror/commands';
+import { keymap, placeholder } from '@codemirror/view';
+import { HighlightStyle, syntaxHighlighting } from '@codemirror/language';
+import { json } from '@codemirror/lang-json';
+import { yaml } from '@codemirror/lang-yaml';
+import { tags } from '@lezer/highlight';
+
 const tabsBar = document.getElementById('tabs-bar');
 const addTabButton = document.getElementById('add-tab-btn');
-const inputBox = document.getElementById('input-box');
-const lineNumberLayer = document.getElementById('line-number-layer');
-const highlightLayer = document.getElementById('highlight-layer');
+const inputEditor = document.getElementById('input-editor');
 const editorWrap = document.getElementById('editor-wrap');
 const layoutEl = document.querySelector('.layout');
 const paneResizer = document.getElementById('pane-resizer');
@@ -22,19 +29,14 @@ const clearTextButton = document.getElementById('clear-text-btn');
 const showTextPaneButton = document.getElementById('show-text-pane-btn');
 const beautifyButton = document.getElementById('beautify-btn');
 const bodyEl = document.body;
-const LARGE_FILE_HIDE_INPUT_LINE_THRESHOLD = 10000;
-const LARGE_EDIT_CHAR_THRESHOLD = 200000;
 const MOBILE_LAYOUT_BREAKPOINT = 980;
 const MIN_PANE_WIDTH_PX = 280;
-const HIGHLIGHT_IDLE_DELAY_MS = 120;
 
 let parseDebounce;
-let highlightDebounce;
 let nextTabId = 1;
 const tabs = [];
 let activeTabId = null;
 let dragState = null;
-let renderedLineNumberCount = -1;
 let parseRequestId = 0;
 let searchRequestId = 0;
 let searchDebounce;
@@ -42,6 +44,20 @@ let paneResizeState = null;
 let paneResizeGuide = null;
 let tabRenameState = null;
 let renderedTreeTabId = null;
+let editorView = null;
+let applyingEditorDocument = false;
+let editorLanguageMode = null;
+let editorScrollRestoreFrame = null;
+const editorLanguage = new Compartment();
+const editorHighlightStyle = HighlightStyle.define([
+  { tag: [tags.propertyName, tags.attributeName], color: '#70b7ff' },
+  { tag: [tags.string, tags.special(tags.string)], color: '#9be59b' },
+  { tag: [tags.number, tags.integer, tags.float], color: '#ffd479' },
+  { tag: [tags.bool, tags.atom], color: '#d9a7ff' },
+  { tag: tags.null, color: '#ff9aa9' },
+  { tag: [tags.lineComment, tags.blockComment, tags.comment], color: '#6f8ea6', fontStyle: 'italic' },
+  { tag: tags.invalid, color: '#ff7b8b', textDecoration: 'underline' }
+]);
 
 function loadAppSettings() {
   const defaults = {
@@ -71,22 +87,39 @@ function getTabById(tabId) {
 
 function persistActiveTabInput() {
   const tab = currentTab();
-  if (!tab || !inputBox) {
+  if (!tab || !editorView) {
     return;
   }
 
-  tab.input = inputBox.value;
-  refreshDirtyState(tab);
+  tab.editorDoc = editorView.state.doc;
+  tab.editorDocDirty = true;
+  captureEditorScroll(tab);
 }
 
 function makeTabState(initialInput = '') {
   const id = nextTabId;
   nextTabId += 1;
+  let storedInput = String(initialInput ?? '');
 
   return {
     id,
     title: `Tab ${id}`,
-    input: initialInput,
+    get input() {
+      if (this.editorDoc && this.editorDocDirty) {
+        storedInput = this.editorDoc.toString();
+        this.editorDocDirty = false;
+      }
+      return storedInput;
+    },
+    set input(value) {
+      storedInput = String(value ?? '');
+      this.editorDoc = null;
+      this.editorDocDirty = false;
+    },
+    editorDoc: null,
+    editorDocDirty: false,
+    editorScrollTop: 0,
+    editorScrollLeft: 0,
     parsedData: null,
     search: '',
     matches: [],
@@ -102,9 +135,197 @@ function makeTabState(initialInput = '') {
     sourceFileName: null,
     savedInputSnapshot: initialInput,
     dirty: false,
-    hideEditorForLargeFile: false,
+    editorHidden: false,
     interactionPath: null
   };
+}
+
+function tabDocumentLength(tab) {
+  if (!tab) {
+    return 0;
+  }
+  return tab.editorDoc ? tab.editorDoc.length : tab.input.length;
+}
+
+function editorModeForTab(tab) {
+  return isYamlTab(tab) ? 'yaml' : 'json';
+}
+
+function editorLanguageExtension(mode) {
+  return mode === 'yaml' ? yaml() : json();
+}
+
+function captureEditorScroll(tab = currentTab()) {
+  if (!editorView || !tab || tab !== currentTab()) {
+    return;
+  }
+  tab.editorScrollTop = editorView.scrollDOM.scrollTop;
+  tab.editorScrollLeft = editorView.scrollDOM.scrollLeft;
+}
+
+function restoreEditorScroll(tab, position = {}) {
+  if (!editorView || !tab) {
+    return;
+  }
+  const scrollTop = Number.isFinite(position.top) ? position.top : 0;
+  const scrollLeft = Number.isFinite(position.left) ? position.left : 0;
+  const applyScroll = () => {
+    if (!editorView || tab !== currentTab()) {
+      return;
+    }
+    editorView.scrollDOM.scrollTop = scrollTop;
+    editorView.scrollDOM.scrollLeft = scrollLeft;
+  };
+
+  if (editorScrollRestoreFrame !== null) {
+    cancelAnimationFrame(editorScrollRestoreFrame);
+  }
+  applyScroll();
+  editorScrollRestoreFrame = requestAnimationFrame(() => {
+    editorScrollRestoreFrame = null;
+    applyScroll();
+  });
+}
+
+function syncEditorLanguage(tab = currentTab()) {
+  if (!editorView || !tab || tab !== currentTab()) {
+    return;
+  }
+  const mode = editorModeForTab(tab);
+  if (mode === editorLanguageMode) {
+    return;
+  }
+  editorLanguageMode = mode;
+  editorView.dispatch({ effects: editorLanguage.reconfigure(editorLanguageExtension(mode)) });
+  if (editorWrap) {
+    editorWrap.dataset.editorMode = mode;
+  }
+}
+
+function setEditorDocument(text, options = {}) {
+  if (!editorView) {
+    return;
+  }
+  const nextText = String(text ?? '');
+  const tab = currentTab();
+  const targetScroll = {
+    top: tab && options.restoreScroll && Number.isFinite(tab.editorScrollTop) ? tab.editorScrollTop : 0,
+    left: tab && options.restoreScroll && Number.isFinite(tab.editorScrollLeft) ? tab.editorScrollLeft : 0
+  };
+  const nextMode = editorModeForTab(tab);
+  const effects = nextMode === editorLanguageMode ? undefined : editorLanguage.reconfigure(editorLanguageExtension(nextMode));
+  applyingEditorDocument = true;
+  try {
+    editorView.dispatch({
+      changes: { from: 0, to: editorView.state.doc.length, insert: nextText },
+      selection: { anchor: 0 },
+      effects
+    });
+  } finally {
+    applyingEditorDocument = false;
+  }
+  editorLanguageMode = nextMode;
+  if (editorWrap) {
+    editorWrap.dataset.editorMode = nextMode;
+  }
+  if (tab) {
+    tab.editorDoc = editorView.state.doc;
+    tab.editorDocDirty = false;
+    tab.editorScrollTop = targetScroll.top;
+    tab.editorScrollLeft = targetScroll.left;
+    restoreEditorScroll(tab, targetScroll);
+  }
+}
+
+function handleEditorUpdate(update) {
+  if (!update.docChanged || applyingEditorDocument) {
+    return;
+  }
+  const tab = currentTab();
+  if (!tab) {
+    return;
+  }
+
+  tab.editorDoc = update.state.doc;
+  tab.editorDocDirty = true;
+  tab.asyncSearchMode = false;
+  tab.asyncSearchResults = [];
+  if (!tab.dirty) {
+    tab.dirty = true;
+    updateSaveButton(tab);
+  }
+
+  const shouldAutoParse = update.transactions.some(
+    (transaction) => transaction.isUserEvent('input.paste') || transaction.isUserEvent('input.drop')
+  );
+  clearTimeout(parseDebounce);
+  parseDebounce = setTimeout(() => {
+    if (shouldAutoParse) {
+      parseAndRender({ auto: true });
+      return;
+    }
+    parseAndRender(false);
+  }, shouldAutoParse ? 150 : 250);
+}
+
+function initializeEditor() {
+  if (!inputEditor || editorView) {
+    return;
+  }
+  editorLanguageMode = 'json';
+  editorView = new EditorView({
+    doc: '',
+    parent: inputEditor,
+    extensions: [
+      basicSetup,
+      editorLanguage.of(json()),
+      syntaxHighlighting(editorHighlightStyle),
+      EditorView.theme({}, { dark: true }),
+      EditorView.contentAttributes.of({
+        'aria-label': 'Structured data input',
+        spellcheck: 'false',
+        autocorrect: 'off',
+        autocapitalize: 'off'
+      }),
+      placeholder('Paste JSON or YAML here...'),
+      keymap.of([
+        indentWithTab,
+        {
+          key: 'Mod-Enter',
+          run: () => {
+            parseAndRender(true);
+            return true;
+          }
+        }
+      ]),
+      EditorView.updateListener.of(handleEditorUpdate)
+    ]
+  });
+  editorView.scrollDOM.addEventListener(
+    'scroll',
+    () => {
+      captureEditorScroll();
+    },
+    { passive: true }
+  );
+}
+
+function selectAllInFocusedControl() {
+  if (editorView && editorView.hasFocus) {
+    editorView.dispatch({
+      selection: { anchor: 0, head: editorView.state.doc.length },
+      scrollIntoView: false
+    });
+    return;
+  }
+
+  const activeElement = document.activeElement;
+  if (activeElement instanceof HTMLInputElement || activeElement instanceof HTMLTextAreaElement) {
+    activeElement.select();
+    return;
+  }
+
+  document.execCommand('selectAll');
 }
 
 function defaultTabTitle(tabId) {
@@ -118,22 +339,8 @@ function normalizeTabTitle(rawTitle, fallbackTitle) {
   return trimmed || fallbackTitle;
 }
 
-function countLines(text) {
-  if (typeof text !== 'string' || text.length === 0) {
-    return 0;
-  }
-
-  let lines = 1;
-  for (let i = 0; i < text.length; i += 1) {
-    if (text.charCodeAt(i) === 10) {
-      lines += 1;
-    }
-  }
-  return lines;
-}
-
 function shouldHideEditor(tab) {
-  return Boolean(tab && tab.hideEditorForLargeFile);
+  return Boolean(tab && tab.editorHidden);
 }
 
 function updatePaneResizerVisibility(tab = currentTab()) {
@@ -379,15 +586,17 @@ function findBestTextIndexForPath(tab, path) {
 
 function jumpTextPaneToPath(path) {
   const tab = currentTab();
-  if (!tab || typeof tab.input !== 'string') {
+  if (!tab || !editorView) {
     return;
   }
 
   const index = findBestTextIndexForPath(tab, path);
-  const safeIndex = Math.max(0, Math.min(index, tab.input.length));
-  inputBox.focus();
-  inputBox.setSelectionRange(safeIndex, safeIndex);
-  inputBox.dispatchEvent(new Event('scroll'));
+  const safeIndex = Math.max(0, Math.min(index, editorView.state.doc.length));
+  editorView.dispatch({
+    selection: { anchor: safeIndex },
+    effects: EditorView.scrollIntoView(safeIndex, { y: 'center' })
+  });
+  editorView.focus();
 }
 
 function jumpToPath(path) {
@@ -573,8 +782,7 @@ function beautifyCurrentTab() {
 
   refreshDirtyState(tab);
   updateSaveButton(tab);
-  inputBox.value = beautified;
-  syncHighlight();
+  setEditorDocument(beautified);
   applyPaneVisibility(tab);
   updateBeautifyVisibility(tab);
   setStatus('Beautified JSON with 4-space indentation.', 'success');
@@ -630,44 +838,6 @@ function formatPrimitive(value) {
   }
 
   return String(value);
-}
-
-function escapeHtml(text) {
-  return String(text)
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;');
-}
-
-function highlightInput(text) {
-  const escaped = escapeHtml(text);
-  const tokenPattern =
-    /"(?:\\.|[^"\\])*"|\btrue\b|\bfalse\b|\bnull\b|-?\d+(?:\.\d+)?(?:[eE][+\-]?\d+)?|#[^\n]*/g;
-
-  return escaped.replace(tokenPattern, (match, offset, fullText) => {
-    if (match.startsWith('"')) {
-      let cursor = offset + match.length;
-      while (cursor < fullText.length && /\s/.test(fullText[cursor])) {
-        cursor += 1;
-      }
-      const className = fullText[cursor] === ':' ? 'token-key' : 'token-string';
-      return `<span class="${className}">${match}</span>`;
-    }
-
-    if (match === 'true' || match === 'false') {
-      return `<span class="token-bool">${match}</span>`;
-    }
-
-    if (match === 'null') {
-      return `<span class="token-null">${match}</span>`;
-    }
-
-    if (match.startsWith('#')) {
-      return `<span class="token-comment">${match}</span>`;
-    }
-
-    return `<span class="token-number">${match}</span>`;
-  });
 }
 
 function containsQuery(query, text) {
@@ -935,9 +1105,8 @@ function serializeParsedData(tab) {
 function refreshTextPaneFromTab(tab) {
   tab.input = serializeParsedData(tab);
   refreshDirtyState(tab);
-  inputBox.value = tab.input;
+  setEditorDocument(tab.input, { restoreScroll: true });
   updateSaveButton(tab);
-  syncHighlight();
 }
 
 function applyStructureChange(message) {
@@ -1906,12 +2075,13 @@ async function parseAndRender(options = false) {
         };
 
   const requestId = ++parseRequestId;
-  const source = tab.input;
 
   if (!config.auto && !config.focusNextButton) {
     setStatus('Input changed. Click "Generate Structure" to refresh.', 'neutral');
     return;
   }
+
+  const source = tab.input;
 
   try {
     if (config.auto && !config.focusNextButton) {
@@ -1943,6 +2113,7 @@ async function parseAndRender(options = false) {
     tab.parsedData = parsed.data;
     tab.parsedFormat = parsed.format;
     tab.parseFallback = Boolean(parsed.fallback);
+    syncEditorLanguage(tab);
     if (tab.search.trim() && shouldUseAsyncSearch(tab)) {
       renderStructure(parsed.data, '', false, false);
       await runAsyncSearch(tab.search, config.focusNextButton && Boolean(tab.search.trim()));
@@ -1979,7 +2150,7 @@ function loadOpenedFile(payload) {
     return;
   }
 
-  const activeHasContent = Boolean(activeTab.input && activeTab.input.trim()) || activeTab.parsedData !== null;
+  const activeHasContent = tabDocumentLength(activeTab) > 0 || activeTab.parsedData !== null;
   const tab = activeHasContent ? addTab('') : activeTab;
 
   clearTimeout(parseDebounce);
@@ -2001,60 +2172,15 @@ function loadOpenedFile(payload) {
     renderTabBar();
   }
 
-  inputBox.value = tab.input;
+  setEditorDocument(tab.input);
   if (searchInput) {
     searchInput.value = '';
   }
-  syncHighlight();
   applyPaneVisibility(tab);
   updateBeautifyVisibility(tab);
   updateSaveButton(tab);
   renderInteractionBreadcrumb(tab);
   parseAndRender({ auto: true });
-}
-
-function syncHighlight() {
-  clearTimeout(highlightDebounce);
-  if (editorWrap) {
-    editorWrap.classList.remove('typing-highlight-pending');
-  }
-  const tab = currentTab();
-  const text = tab ? tab.input : '';
-  updateLineNumbers(text);
-  highlightLayer.innerHTML = `${highlightInput(text)}\n`;
-  if (lineNumberLayer) {
-    lineNumberLayer.scrollTop = inputBox.scrollTop;
-  }
-  highlightLayer.scrollTop = inputBox.scrollTop;
-  highlightLayer.scrollLeft = inputBox.scrollLeft;
-}
-
-function scheduleHighlightSync() {
-  if (editorWrap) {
-    editorWrap.classList.add('typing-highlight-pending');
-  }
-  clearTimeout(highlightDebounce);
-  highlightDebounce = setTimeout(() => {
-    syncHighlight();
-  }, HIGHLIGHT_IDLE_DELAY_MS);
-}
-
-function updateLineNumbers(text) {
-  if (!lineNumberLayer) {
-    return;
-  }
-
-  const lineCount = Math.max(1, countLines(text));
-  if (lineCount === renderedLineNumberCount) {
-    return;
-  }
-
-  const numbers = new Array(lineCount);
-  for (let i = 0; i < lineCount; i += 1) {
-    numbers[i] = String(i + 1);
-  }
-  lineNumberLayer.textContent = `${numbers.join('\n')}\n`;
-  renderedLineNumberCount = lineCount;
 }
 
 function focusTabRenameInput(tabId) {
@@ -2209,12 +2335,11 @@ function hydrateActiveTab() {
   applyPaneVisibility(tab);
   refreshDirtyState(tab);
   updateSaveButton(tab);
-  inputBox.value = tab.input;
+  setEditorDocument(tab.input, { restoreScroll: true });
   if (searchInput) {
     searchInput.value = tab.search;
   }
 
-  syncHighlight();
   refreshStatusFromTab();
   updateBeautifyVisibility(tab);
   renderInteractionBreadcrumb(tab);
@@ -2577,42 +2702,6 @@ if (nodeBreadcrumb) {
   });
 }
 
-inputBox.addEventListener('input', (event) => {
-  const tab = currentTab();
-  if (!tab) {
-    return;
-  }
-
-  tab.input = inputBox.value;
-  tab.asyncSearchMode = false;
-  tab.asyncSearchResults = [];
-  if (!tab.dirty) {
-    tab.dirty = true;
-    updateSaveButton(tab);
-  }
-  scheduleHighlightSync();
-
-  clearTimeout(parseDebounce);
-  const shouldAutoParse =
-    event instanceof InputEvent &&
-    (event.inputType === 'insertFromPaste' || event.inputType === 'insertFromDrop');
-  parseDebounce = setTimeout(() => {
-    if (shouldAutoParse) {
-      parseAndRender({ auto: true });
-      return;
-    }
-    parseAndRender(false);
-  }, shouldAutoParse ? 150 : 250);
-});
-
-inputBox.addEventListener('scroll', () => {
-  if (lineNumberLayer) {
-    lineNumberLayer.scrollTop = inputBox.scrollTop;
-  }
-  highlightLayer.scrollTop = inputBox.scrollTop;
-  highlightLayer.scrollLeft = inputBox.scrollLeft;
-});
-
 if (renderBtn) {
   renderBtn.addEventListener('click', () => parseAndRender(true));
 }
@@ -2659,8 +2748,7 @@ if (clearTextButton) {
     tab.interactionPath = null;
     refreshDirtyState(tab);
 
-    inputBox.value = '';
-    syncHighlight();
+    setEditorDocument('');
     applyPaneVisibility(tab);
     updateSaveButton(tab);
     showTreePlaceholder('<p class="node-meta">Structure will appear here after successful parsing.</p>');
@@ -2670,7 +2758,9 @@ if (clearTextButton) {
     updateMatchButtons();
     renderInteractionBreadcrumb(tab);
     setStatus('Cleared all input text.', 'success');
-    inputBox.focus();
+    if (editorView) {
+      editorView.focus();
+    }
   });
 }
 
@@ -2680,9 +2770,11 @@ if (showTextPaneButton) {
     if (!tab) {
       return;
     }
-    tab.hideEditorForLargeFile = false;
+    tab.editorHidden = false;
     applyPaneVisibility(tab);
-    inputBox.focus();
+    if (editorView) {
+      editorView.focus();
+    }
   });
 }
 
@@ -2692,7 +2784,7 @@ if (hideTextPaneButton) {
     if (!tab) {
       return;
     }
-    tab.hideEditorForLargeFile = true;
+    tab.editorHidden = true;
     applyPaneVisibility(tab);
   });
 }
@@ -2802,22 +2894,6 @@ if (searchNextButton) {
   });
 }
 
-inputBox.addEventListener('keydown', (event) => {
-  if (event.key === 'Tab' && !event.ctrlKey && !event.metaKey && !event.altKey) {
-    event.preventDefault();
-    const start = inputBox.selectionStart ?? 0;
-    const end = inputBox.selectionEnd ?? start;
-    inputBox.setRangeText('\t', start, end, 'end');
-    inputBox.dispatchEvent(new Event('input', { bubbles: true }));
-    return;
-  }
-
-  if ((event.ctrlKey || event.metaKey) && event.key === 'Enter') {
-    event.preventDefault();
-    parseAndRender(true);
-  }
-});
-
 if (addTabButton) {
   addTabButton.addEventListener('click', () => {
     addTab('');
@@ -2846,9 +2922,15 @@ if (api && typeof api.onRequestSave === 'function') {
     saveCurrentTab();
   });
 }
+if (api && typeof api.onRequestSelectAll === 'function') {
+  api.onRequestSelectAll(() => {
+    selectAllInFocusedControl();
+  });
+}
 
 const appSettings = loadAppSettings();
 const initialInput = appSettings.startWithEmptyInput ? '' : String(appSettings.defaultInput || '');
+initializeEditor();
 addTab(initialInput);
 applyPaneVisibility(currentTab());
 updateSaveButton(currentTab());
