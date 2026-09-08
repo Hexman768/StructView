@@ -88,6 +88,7 @@ function makeTabState(initialInput = '') {
     title: `Tab ${id}`,
     input: initialInput,
     parsedData: null,
+    parsedSource: initialInput.trim() ? null : initialInput,
     search: '',
     matches: [],
     activeMatchIndex: -1,
@@ -578,7 +579,7 @@ function beautifyCurrentTab() {
   applyPaneVisibility(tab);
   updateBeautifyVisibility(tab);
   setStatus('Beautified JSON with 4-space indentation.', 'success');
-  parseAndRender({ auto: true });
+  parseAndRender();
 }
 
 function setStatus(message, type = 'neutral') {
@@ -934,6 +935,7 @@ function serializeParsedData(tab) {
 
 function refreshTextPaneFromTab(tab) {
   tab.input = serializeParsedData(tab);
+  tab.parsedSource = tab.input;
   refreshDirtyState(tab);
   inputBox.value = tab.input;
   updateSaveButton(tab);
@@ -1894,36 +1896,26 @@ async function parseAndRender(options = false) {
     return;
   }
 
-  const config =
+  const focusNextButton =
     typeof options === 'object' && options !== null
-      ? {
-          auto: Boolean(options.auto),
-          focusNextButton: Boolean(options.focusNextButton)
-        }
-      : {
-          auto: false,
-          focusNextButton: Boolean(options)
-        };
+      ? Boolean(options.focusNextButton)
+      : Boolean(options);
 
   const requestId = ++parseRequestId;
   const source = tab.input;
 
-  if (!config.auto && !config.focusNextButton) {
-    setStatus('Input changed. Click "Generate Structure" to refresh.', 'neutral');
-    return;
-  }
-
   try {
-    if (config.auto && !config.focusNextButton) {
+    if (!focusNextButton) {
       setStatus('Parsing input...', 'neutral');
     }
     const parsed = await parseSource(source);
-    if (requestId !== parseRequestId || tab !== currentTab()) {
+    if (requestId !== parseRequestId || tab !== currentTab() || tab.input !== source) {
       return;
     }
 
     if (!parsed.ok) {
       tab.parsedData = null;
+      tab.parsedSource = source;
       tab.matches = [];
       tab.asyncSearchMode = false;
       tab.asyncSearchResults = [];
@@ -1945,15 +1937,23 @@ async function parseAndRender(options = false) {
     tab.parseFallback = Boolean(parsed.fallback);
     if (tab.search.trim() && shouldUseAsyncSearch(tab)) {
       renderStructure(parsed.data, '', false, false);
-      await runAsyncSearch(tab.search, config.focusNextButton && Boolean(tab.search.trim()));
+      await runAsyncSearch(tab.search, focusNextButton && Boolean(tab.search.trim()));
+      if (requestId !== parseRequestId || tab !== currentTab() || tab.input !== source) {
+        return;
+      }
+      tab.parsedSource = source;
       setStatus(`Parsed as ${parsed.format}. Expand any box to inspect nested values.`, 'success');
       applyPaneVisibility(tab);
       return;
     }
-    renderStructure(parsed.data, tab.search, true, config.focusNextButton && Boolean(tab.search.trim()));
+    renderStructure(parsed.data, tab.search, true, focusNextButton && Boolean(tab.search.trim()));
+    tab.parsedSource = source;
     setStatus(`Parsed as ${parsed.format}. Expand any box to inspect nested values.`, 'success');
     applyPaneVisibility(tab);
   } catch (error) {
+    if (requestId !== parseRequestId || tab !== currentTab() || tab.input !== source) {
+      return;
+    }
     tab.parsedData = null;
     tab.matches = [];
     tab.asyncSearchMode = false;
@@ -2010,7 +2010,7 @@ function loadOpenedFile(payload) {
   updateBeautifyVisibility(tab);
   updateSaveButton(tab);
   renderInteractionBreadcrumb(tab);
-  parseAndRender({ auto: true });
+  parseAndRender();
 }
 
 function syncHighlight() {
@@ -2235,6 +2235,10 @@ function hydrateActiveTab() {
       searchStatus.textContent = tab.search.trim() ? `No matches for "${tab.search.trim()}".` : 'Showing full structure.';
     }
     updateMatchButtons();
+  }
+
+  if (tab.parsedSource !== tab.input) {
+    parseAndRender();
   }
 }
 
@@ -2577,13 +2581,14 @@ if (nodeBreadcrumb) {
   });
 }
 
-inputBox.addEventListener('input', (event) => {
+inputBox.addEventListener('input', () => {
   const tab = currentTab();
   if (!tab) {
     return;
   }
 
   tab.input = inputBox.value;
+  parseRequestId += 1;
   tab.asyncSearchMode = false;
   tab.asyncSearchResults = [];
   if (!tab.dirty) {
@@ -2593,16 +2598,9 @@ inputBox.addEventListener('input', (event) => {
   scheduleHighlightSync();
 
   clearTimeout(parseDebounce);
-  const shouldAutoParse =
-    event instanceof InputEvent &&
-    (event.inputType === 'insertFromPaste' || event.inputType === 'insertFromDrop');
   parseDebounce = setTimeout(() => {
-    if (shouldAutoParse) {
-      parseAndRender({ auto: true });
-      return;
-    }
-    parseAndRender(false);
-  }, shouldAutoParse ? 150 : 250);
+    parseAndRender();
+  }, 250);
 });
 
 inputBox.addEventListener('scroll', () => {
@@ -2614,7 +2612,7 @@ inputBox.addEventListener('scroll', () => {
 });
 
 if (renderBtn) {
-  renderBtn.addEventListener('click', () => parseAndRender(true));
+  renderBtn.addEventListener('click', () => parseAndRender({ focusNextButton: true }));
 }
 
 if (openFileButton) {
@@ -2651,8 +2649,10 @@ if (clearTextButton) {
     }
 
     clearTimeout(parseDebounce);
+    parseRequestId += 1;
     tab.input = '';
     tab.parsedData = null;
+    tab.parsedSource = '';
     tab.matches = [];
     tab.activeMatchIndex = -1;
     tab.expandedPaths = new Set();
@@ -2814,7 +2814,7 @@ inputBox.addEventListener('keydown', (event) => {
 
   if ((event.ctrlKey || event.metaKey) && event.key === 'Enter') {
     event.preventDefault();
-    parseAndRender(true);
+    parseAndRender({ focusNextButton: true });
   }
 });
 
@@ -2852,6 +2852,3 @@ const initialInput = appSettings.startWithEmptyInput ? '' : String(appSettings.d
 addTab(initialInput);
 applyPaneVisibility(currentTab());
 updateSaveButton(currentTab());
-if (initialInput.trim()) {
-  parseAndRender(false);
-}
