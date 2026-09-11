@@ -156,7 +156,25 @@ function createAppMenu(getFocusedWindow) {
     },
     {
       label: 'Edit',
-      submenu: [{ role: 'undo' }, { role: 'redo' }, { type: 'separator' }, { role: 'cut' }, { role: 'copy' }, { role: 'paste' }, { role: 'selectAll' }]
+      submenu: [
+        { role: 'undo' },
+        { role: 'redo' },
+        { type: 'separator' },
+        { role: 'cut' },
+        { role: 'copy' },
+        { role: 'paste' },
+        {
+          label: 'Select All',
+          accelerator: 'CmdOrCtrl+A',
+          click: () => {
+            const window = getFocusedWindow();
+            if (!window) {
+              return;
+            }
+            window.webContents.send('menu-select-all-request');
+          }
+        }
+      ]
     },
     {
       label: 'View',
