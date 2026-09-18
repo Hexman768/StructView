@@ -260,6 +260,7 @@ body.resizing-panes .layout {
   box-shadow: 0 15px 30px -20px var(--shadow);
   display: flex;
   flex-direction: column;
+  min-width: 0;
   min-height: 0;
 }
 
@@ -469,6 +470,8 @@ body.resizing-panes .layout {
 
 .node {
   margin-bottom: 0.4rem;
+  /* Keep nested boxes wide enough for their content; the tree pane scrolls. */
+  min-width: max-content;
 }
 
 .node details {
